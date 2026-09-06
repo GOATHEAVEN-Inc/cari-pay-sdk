@@ -1,0 +1,320 @@
+openapi: 3.0.3
+info:
+  title: CARI PAY Gateway API
+  version: "1.0.0"
+  description: |
+    CARI PAY 결제 게이트웨이. 결제 생성 / 조회 / 취소 3개 엔드포인트 + 파트너 콜백 1개로 연동이 끝납니다.
+
+    ## 인증 — API_SIGN
+    모든 요청에 서명이 필요합니다. 5개 값을 **구분자 없이 순서대로** 이어 붙여 SHA-256 → 소문자 hex.
+
+        API_SIGN = sha256(TRANS_SEQNO + PLATFORM_CODE + STORE_CODE + TRANS_AT + API_KEY)
+
+    `API_KEY`는 서명 시크릿입니다. 서버 환경변수·시크릿매니저에만 두고 클라이언트/로그에 절대 노출하지 마세요.
+
+    ## 성공 판정
+    HTTP 200이어도 성공이 아닙니다. `result_data.RESULT_CODE == "0000"` 만 성공으로 판정하세요.
+    (최상위 `result_code`는 게이트웨이 버전에 따라 `0` / `"0"` 으로 타입이 흔들립니다.)
+
+    ## 필수 안전 수칙
+    - 금액은 서버 카탈로그에서 결정 — 클라이언트가 보낸 금액을 그대로 청구하지 않습니다.
+    - 콜백 수신 시 본문을 믿지 말고 `searchPayment`로 승인 상태를 이중확인합니다.
+    - 콜백은 지연·중복 도달합니다. 서비스 제공(해금/배송)은 반드시 멱등 처리하세요.
+    - 콜백 누락에 대비해 조회 폴링을 병행합니다.
+  contact:
+    name: CARI PAY 사업부 (GOATHEAVEN Inc.)
+    url: https://caripay.co.kr/contact
+
+servers:
+  - url: https://dev-api.chewingpay.com
+    description: 테스트 (NICE 테스트 모드 · 실과금 없음)
+  - url: https://api.chewingpay.com
+    description: 운영
+
+tags:
+  - name: payment
+    description: 결제 생성·조회·취소
+  - name: callback
+    description: 파트너 서버가 구현하는 콜백
+
+paths:
+  /api/requestPayment:
+    post:
+      tags: [payment]
+      summary: 결제 생성
+      description: 결제 건을 만들고 고객에게 전달할 결제 페이지 링크(REDIRECT_URL)를 발급합니다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentRequest'
+            examples:
+              bill:
+                summary: 청구서(BILL)
+                value:
+                  TRANS_SEQNO: svc202608191200000123
+                  PLATFORM_CODE: PC0000000000000001
+                  STORE_CODE: SD0000000000000001
+                  TRANS_AT: "20260819120000"
+                  APPROVAL_AMOUNT: "128000"
+                  MOBILE_NO: "01012345678"
+                  PAY_USER_NAME: 홍길동
+                  REQUEST_REASON: 8월 수강료
+                  INFO_MESSAGE: 결제 안내
+                  CONFIRM_URL: https://api.partner.example/caripay/callback/svc202608191200000123
+                  orderType: BILL
+                  API_SIGN: 3f1c...(64자 소문자 hex)
+      responses:
+        '200':
+          description: 게이트웨이 응답 (성공/실패 모두 200 — RESULT_CODE로 판정)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatePaymentResponse'
+
+  /api/searchPayment:
+    post:
+      tags: [payment]
+      summary: 결제 상태 조회
+      description: 승인 여부를 확인하는 **유일한 근거**입니다. 콜백 수신 시·폴링 시 모두 이 API로 확인합니다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchPaymentRequest'
+      responses:
+        '200':
+          description: 거래 상세
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchPaymentResponse'
+
+  /api/requestPaymentCancel:
+    post:
+      tags: [payment]
+      summary: 결제 취소 / 청구서 삭제
+      description: |
+        `REQUEST_TYPE=CANCEL` 은 승인된 결제의 취소(환불), `DELETE` 는 미결제 청구서 삭제입니다.
+        `APPROVAL_AMOUNT`에 취소 금액을 지정합니다(부분 취소 가능).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelPaymentRequest'
+      responses:
+        '200':
+          description: 취소 결과
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelPaymentResponse'
+
+  /{CONFIRM_URL}:
+    post:
+      tags: [callback]
+      summary: 결제 완료 콜백 (파트너 서버가 구현)
+      description: |
+        결제 생성 시 넘긴 `CONFIRM_URL`로 CARI PAY가 POST 합니다. 사전 등록이 필요 없습니다.
+
+        - 전송 실패 시 자동 재시도(Outbox 큐) → **중복 도달을 전제로 설계**하세요.
+        - 본문만 믿지 말고 수신 즉시 `searchPayment`로 `APPROVE_COMPLETE`를 재확인하세요.
+        - 이미 처리된 거래면 200만 응답하고 무시합니다(멱등).
+        - 재전송 폭주를 막으려면 먼저 200을 응답하고 처리는 비동기로 돌립니다.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: 거래정보·주문유형이 담깁니다. 필드 구성은 변경될 수 있으므로 TRANS_SEQNO만 사용하세요.
+              properties:
+                TRANS_SEQNO:
+                  type: string
+      responses:
+        '200':
+          description: 수신 확인. 200 외 응답은 재시도됩니다.
+
+components:
+  schemas:
+    CommonRequest:
+      type: object
+      required: [TRANS_SEQNO, PLATFORM_CODE, STORE_CODE, TRANS_AT, API_SIGN]
+      properties:
+        TRANS_SEQNO:
+          type: string
+          maxLength: 64
+          description: 거래 고유번호. 파트너가 직접 채번하며 전 시스템에서 유일해야 합니다(서비스 접두어 권장).
+          example: svc202608191200000123
+        PLATFORM_CODE:
+          type: string
+          description: 발급받은 플랫폼 코드
+        STORE_CODE:
+          type: string
+          description: 발급받은 가맹점(정산 귀속처) 코드
+        TRANS_AT:
+          type: string
+          pattern: '^\d{14}$'
+          description: 요청 시각 yyyyMMddHHmmss (KST)
+          example: "20260819120000"
+        API_SIGN:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: sha256(TRANS_SEQNO + PLATFORM_CODE + STORE_CODE + TRANS_AT + API_KEY) 소문자 hex
+
+    CreatePaymentRequest:
+      allOf:
+        - $ref: '#/components/schemas/CommonRequest'
+        - type: object
+          required: [APPROVAL_AMOUNT, MOBILE_NO, PAY_USER_NAME, REQUEST_REASON, CONFIRM_URL]
+          properties:
+            APPROVAL_AMOUNT:
+              type: string
+              pattern: '^\d{1,12}$'
+              description: 결제금액(원). **문자열**로 보냅니다. 서버 카탈로그 기준으로 결정하세요.
+              example: "128000"
+            MOBILE_NO:
+              type: string
+              pattern: '^\d{10,11}$'
+              description: 고객 휴대폰번호. 숫자만.
+              example: "01012345678"
+            PAY_USER_NAME:
+              type: string
+              description: 결제자명
+            REQUEST_REASON:
+              type: string
+              description: 결제 사유(주문명). 결제창·문자에 노출됩니다.
+            INFO_MESSAGE:
+              type: string
+              description: 결제창 안내 문구
+            CONFIRM_URL:
+              type: string
+              format: uri
+              description: 결제 완료 시 호출될 파트너 백엔드 콜백 URL
+            orderType:
+              type: string
+              enum: [BILL, SHOP]
+              default: BILL
+              description: BILL=청구서, SHOP=상품 주문
+            ITEMS:
+              type: array
+              description: SHOP 주문의 세부 품목
+              items:
+                $ref: '#/components/schemas/PaymentItem'
+
+    PaymentItem:
+      type: object
+      required: [name, unitPrice]
+      properties:
+        name: { type: string }
+        unitPrice: { type: integer, format: int64 }
+        qty: { type: integer }
+        discountAmount: { type: integer, format: int64 }
+        taxType: { type: string }
+        publisher: { type: string }
+        imageUrl: { type: string, format: uri }
+
+    SearchPaymentRequest:
+      $ref: '#/components/schemas/CommonRequest'
+
+    CancelPaymentRequest:
+      allOf:
+        - $ref: '#/components/schemas/CommonRequest'
+        - type: object
+          required: [REQUEST_TYPE, APPROVAL_AMOUNT, MOBILE_NO]
+          properties:
+            REQUEST_TYPE:
+              type: string
+              enum: [CANCEL, DELETE]
+              description: CANCEL=결제 취소(환불), DELETE=청구서 삭제
+            APPROVAL_AMOUNT:
+              type: string
+              pattern: '^\d{1,12}$'
+              description: 취소 금액(원). 문자열.
+            MOBILE_NO:
+              type: string
+              pattern: '^\d{10,11}$'
+
+    ResultEnvelope:
+      type: object
+      properties:
+        result_code:
+          description: 최상위 코드. 타입이 `0`/`"0"`로 흔들리므로 판정에 쓰지 마세요.
+          oneOf: [{ type: integer }, { type: string }]
+        result_msg:
+          type: string
+
+    ResultData:
+      type: object
+      required: [RESULT_CODE]
+      properties:
+        RESULT_CODE:
+          type: string
+          description: '"0000"만 성공. 그 외는 실패이며 RESULT_MSG에 사유가 담깁니다.'
+          example: "0000"
+        RESULT_MSG:
+          type: string
+
+    CreatePaymentResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResultEnvelope'
+        - type: object
+          properties:
+            result_data:
+              allOf:
+                - $ref: '#/components/schemas/ResultData'
+                - type: object
+                  properties:
+                    REDIRECT_URL:
+                      type: string
+                      format: uri
+                      description: 고객 결제 페이지. 바로 리다이렉트하거나 문자/알림톡으로 발송합니다.
+
+    SearchPaymentResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResultEnvelope'
+        - type: object
+          properties:
+            result_data:
+              allOf:
+                - $ref: '#/components/schemas/ResultData'
+                - type: object
+                  properties:
+                    TRANS_SEQNO: { type: string }
+                    APPROVE_STATUS:
+                      type: string
+                      enum: [STORE_REQUEST, APPROVE_COMPLETE, APPROVE_FAIL, CANCEL_COMPLETE, CANCEL_FAIL, STORE_DELETE]
+                      description: |
+                        STORE_REQUEST=결제 대기 · APPROVE_COMPLETE=승인 완료(이것만 결제 성공)
+                        APPROVE_FAIL=승인 실패 · CANCEL_COMPLETE=취소 완료
+                        CANCEL_FAIL=취소 실패 · STORE_DELETE=청구서 삭제됨
+                    MOBILE_NO: { type: string }
+                    APPROVAL_AMOUNT: { type: integer, description: 승인금액. 주문 금액과 대사하세요. }
+                    SUPPLY_AMOUNT: { type: integer }
+                    TAX_CHARGE: { type: integer }
+                    APPROVAL_DATETIME: { type: string, example: "20260819120135" }
+                    APPROVAL_NUMBER: { type: string, description: 카드 승인번호 }
+                    INSTALLMENT_MONTH: { type: string, description: 할부개월 }
+                    ISSUER_NAME: { type: string, description: 발급사 }
+                    ACCEPTER_NAME: { type: string, description: 매입사 }
+                    METHOD_NAME: { type: string, description: 결제수단 (신용카드/카카오페이) }
+                    STORE_NAME: { type: string }
+                    APPROVAL_CANCEL_DATETIME: { type: string }
+                    CANCEL_AMOUNT: { type: integer }
+                    CANCEL_REASON: { type: string }
+
+    CancelPaymentResponse:
+      allOf:
+        - $ref: '#/components/schemas/ResultEnvelope'
+        - type: object
+          properties:
+            result_data:
+              allOf:
+                - $ref: '#/components/schemas/ResultData'
+                - type: object
+                  properties:
+                    TRANS_SEQNO: { type: string }
+                    MOBILE_NO: { type: string }
+                    APPROVAL_AMOUNT: { type: integer, description: 취소된 금액 }

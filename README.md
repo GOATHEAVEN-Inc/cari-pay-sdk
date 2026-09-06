@@ -1,0 +1,156 @@
+# CARI PAY SDK
+
+카리페이 결제를 **10줄로** 붙이기 위한 공식 SDK와 API 규격입니다.
+외부 업체·개인 개발자가 자기 서비스에 그대로 가져다 쓰는 것을 전제로 만들었습니다.
+
+```
+cari-pay-sdk/
+├── openapi.yaml            # API 정식 규격 (Swagger UI·클라이언트 생성기용)
+├── node/                   # JavaScript / TypeScript SDK  (의존성 0개, Node 18+)
+└── python/                 # Python SDK                    (표준 라이브러리만, 3.9+)
+```
+
+지원 언어에 없다면 `openapi.yaml`로 클라이언트를 생성하거나(아래 참고), 아래 curl 규격 그대로 직접 호출하면 됩니다.
+
+---
+
+## 0. 먼저 받을 것 4가지
+
+카리페이 도입 신청( https://caripay.co.kr/start ) 후 발급받습니다. **테스트/운영 키가 다릅니다.**
+
+| 항목 | 설명 |
+|---|---|
+| `BASE_URL` | 테스트 `https://dev-api.chewingpay.com` · 운영 `https://api.chewingpay.com` |
+| `PLATFORM_CODE` | 서비스 식별 코드 |
+| `STORE_CODE` | 정산 가맹점 코드 |
+| `API_KEY` | **서명 시크릿.** 서버 환경변수·시크릿매니저에만. 클라이언트 배포·로그 출력 금지 |
+
+```bash
+export CARIPAY_MODE=test           # 운영 전환 시 live
+export CARIPAY_PLATFORM_CODE=PC...
+export CARIPAY_STORE_CODE=SD...
+export CARIPAY_API_KEY=...
+```
+
+---
+
+## 1. Node.js / TypeScript
+
+```bash
+npm install github:GOATHEAVEN-Inc/cari-pay-sdk
+```
+
+공개 npm 레지스트리 배포 전에도 GitHub에서 같은 버전을 설치할 수 있습니다.
+
+```js
+import { CariPay } from "@caripay/sdk";
+
+const pay = CariPay.fromEnv();
+
+// ① 결제 생성 → 링크 발급 (금액은 반드시 서버에서 결정)
+const { transSeqno, redirectUrl } = await pay.createPayment({
+  amount: 128000,
+  mobileNo: "01012345678",
+  payerName: "홍길동",
+  reason: "8월 수강료",
+  confirmUrl: "https://api.example.com/caripay/callback",
+});
+// redirectUrl → 바로 리다이렉트하거나 문자/알림톡으로 발송
+
+// ② 콜백/폴링에서 승인 확인 (몇 번 불러도 같은 결과)
+const p = await pay.confirmCallback(transSeqno);
+if (p.paid && p.amount === 128000) { /* 이용권 해금 */ }
+
+// ③ 취소 (금액 생략 시 전액)
+await pay.cancelPayment({ transSeqno });
+```
+
+- 타입 정의 포함(`index.d.ts`) — TypeScript에서 바로 자동완성됩니다.
+- 전체 서버 예제: [`node/example-express.mjs`](node/example-express.mjs) — 생성·콜백·폴링·멱등 처리까지 붙여넣기용.
+- 셀프체크: `cd node && npm test`
+
+## 2. Python
+
+```bash
+pip install "git+https://github.com/GOATHEAVEN-Inc/cari-pay-sdk.git#subdirectory=python"
+```
+
+```python
+from caripay import CariPay
+
+pay = CariPay.from_env()
+
+created = pay.create_payment(
+    amount=128000,
+    mobile_no="01012345678",
+    payer_name="홍길동",
+    reason="8월 수강료",
+    confirm_url="https://api.example.com/caripay/callback",
+)
+print(created["redirect_url"])
+
+found = pay.confirm_callback(created["trans_seqno"])
+if found["paid"] and found["amount"] == 128000:
+    ...  # 이용권 해금
+
+pay.cancel_payment(created["trans_seqno"])
+```
+
+셀프체크: `cd python && python3 test_caripay.py`
+
+## 3. 그 외 언어 (직접 호출 / 클라이언트 생성)
+
+```bash
+# 원하는 언어 클라이언트 생성
+npx @openapitools/openapi-generator-cli generate -i openapi.yaml -g java -o ./client
+# 브라우저로 규격 열람
+npx @redocly/cli preview-docs openapi.yaml
+```
+
+서명만 맞추면 어떤 언어든 됩니다.
+
+```
+API_SIGN = sha256(TRANS_SEQNO + PLATFORM_CODE + STORE_CODE + TRANS_AT + API_KEY)   # 소문자 hex
+TRANS_AT = KST 기준 yyyyMMddHHmmss (14자리)
+```
+
+```bash
+SIGN=$(printf '%s' "svc001${PC}${SD}20260819120000${KEY}" | shasum -a 256 | cut -d' ' -f1)
+curl -X POST https://dev-api.chewingpay.com/api/requestPayment \
+  -H 'Content-Type: application/json' \
+  -d "{\"TRANS_SEQNO\":\"svc001\",\"PLATFORM_CODE\":\"$PC\",\"STORE_CODE\":\"$SD\",
+       \"TRANS_AT\":\"20260819120000\",\"APPROVAL_AMOUNT\":\"128000\",\"MOBILE_NO\":\"01012345678\",
+       \"PAY_USER_NAME\":\"홍길동\",\"REQUEST_REASON\":\"8월 수강료\",
+       \"CONFIRM_URL\":\"https://api.example.com/caripay/callback\",\"orderType\":\"BILL\",\"API_SIGN\":\"$SIGN\"}"
+```
+
+---
+
+## API 4개
+
+| 하는 일 | 엔드포인트 | Node | Python |
+|---|---|---|---|
+| 결제 생성 → 링크 발급 | `POST /api/requestPayment` | `createPayment()` | `create_payment()` |
+| 상태 조회 (승인 확인) | `POST /api/searchPayment` | `getPayment()` | `get_payment()` |
+| 취소/환불 · 청구서 삭제 | `POST /api/requestPaymentCancel` | `cancelPayment()` / `deleteBill()` | `cancel_payment()` / `delete_bill()` |
+| 완료 콜백 (파트너가 구현) | `POST {CONFIRM_URL}` | `confirmCallback()` | `confirm_callback()` |
+
+상태값: `STORE_REQUEST`(대기) → `APPROVE_COMPLETE`(**승인 완료**) / `APPROVE_FAIL` / `CANCEL_COMPLETE` / `CANCEL_FAIL` / `STORE_DELETE`
+
+## 안 지키면 사고 나는 것 5가지
+
+1. **금액은 서버에서 결정** — 클라이언트가 보낸 금액을 그대로 청구하지 않습니다.
+2. **콜백 본문을 믿지 않습니다** — 수신 즉시 조회로 `APPROVE_COMPLETE`를 이중확인 (`confirmCallback`이 이것만 합니다).
+3. **콜백은 중복·지연 도달합니다** — 이미 처리한 주문이면 200만 응답하고 무시(멱등). 해금·배송은 딱 1회.
+4. **폴링 병행** — 콜백이 유실될 수 있으니 프런트 대기 화면이나 배치에서 상태를 확인합니다(`waitForPayment`).
+5. **`API_KEY`는 서버에만** — 유출 의심 시 즉시 재발급 요청.
+
+## 오픈 전 체크
+
+- [ ] 거래번호(`TRANS_SEQNO`)가 전 시스템에서 유일한 구조인가 (`newTransSeqno()` 사용 권장)
+- [ ] 테스트 게이트웨이에서 결제 → 콜백 → 조회 → 취소 전 구간 1회 이상 통과
+- [ ] 승인금액과 주문금액 대사 로직 존재
+- [ ] 운영 키로 환경변수 교체 (`CARIPAY_MODE=live`)
+- [ ] `API_KEY`가 코드·로그·클라이언트 번들에 없음
+
+전체 도입 절차·서류·정산은 [CARI PAY 연동가이드](../CARI-PAY-연동가이드.pdf), 문의는 https://caripay.co.kr/contact
