@@ -1,6 +1,6 @@
 {
   "name": "@caripay/sdk",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "CARI PAY 결제 게이트웨이 공식 Node.js SDK와 OpenAPI 규격",
   "type": "module",
   "main": "node/index.js",

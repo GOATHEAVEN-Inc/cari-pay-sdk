@@ -48,6 +48,7 @@ const cfg = { platformCode: "PC0001", storeCode: "SD0001", apiKey: KEY, mode: "t
   await assert.rejects(() => pay.createPayment({ ...base, amount: -1 }), CariPayError);
   await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, mobileNo: "123" }), CariPayError);
   await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, confirmUrl: "" }), CariPayError);
+  await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, confirmUrl: "http://example.com/callback" }), CariPayError);
   await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, orderType: "X" }), CariPayError);
 }
 
@@ -63,7 +64,7 @@ const cfg = { platformCode: "PC0001", storeCode: "SD0001", apiKey: KEY, mode: "t
   const pay = new CariPay({ ...cfg, fetch: async () => new Response(JSON.stringify({
     result_code: 0, result_data: {
       RESULT_CODE: "0000", TRANS_SEQNO: "svc001", APPROVE_STATUS: "APPROVE_COMPLETE",
-      APPROVAL_AMOUNT: 12000, APPROVAL_NUMBER: "30001234", METHOD_NAME: "신용카드", MOBILE_NO: "01012345678",
+      APPROVAL_AMOUNT: "12000", APPROVAL_NUMBER: "30001234", METHOD_NAME: "신용카드", MOBILE_NO: "01012345678",
     },
   })) });
   const p = await pay.getPayment("svc001");

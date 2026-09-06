@@ -55,6 +55,7 @@ stub(pay, lambda url, body: (_ for _ in ()).throw(AssertionError("호출되면 �
 base = dict(mobile_no="01012345678", payer_name="홍", reason="r", confirm_url="https://c")
 for bad in (dict(base, amount=0), dict(base, amount=-1), dict(base, amount=10**13),
             dict(base, amount=1000, mobile_no="123"), dict(base, amount=1000, confirm_url=""),
+            dict(base, amount=1000, confirm_url="http://example.com/callback"),
             dict(base, amount=1000, order_type="X")):
     try:
         pay.create_payment(**bad)
@@ -76,7 +77,7 @@ except CariPayError as exc:
 pay = CariPay(**CFG)
 stub(pay, lambda url, body: {"result_data": {
     "RESULT_CODE": "0000", "TRANS_SEQNO": "svc001", "APPROVE_STATUS": "APPROVE_COMPLETE",
-    "APPROVAL_AMOUNT": 12000, "APPROVAL_NUMBER": "30001234", "METHOD_NAME": "신용카드"}})
+    "APPROVAL_AMOUNT": "12000", "APPROVAL_NUMBER": "30001234", "METHOD_NAME": "신용카드"}})
 found = pay.get_payment("svc001")
 assert found["paid"] is True and found["canceled"] is False and found["amount"] == 12000
 assert pay.confirm_callback({"TRANS_SEQNO": "svc001"}) == found

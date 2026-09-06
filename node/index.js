@@ -81,6 +81,27 @@ function checkTransSeqno(transSeqno) {
   return s;
 }
 
+function checkCallbackUrl(confirmUrl) {
+  const value = String(req(confirmUrl, "confirmUrl"));
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new CariPayError("confirmUrl은 유효한 URL이어야 합니다.");
+  }
+  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !(local && url.protocol === "http:")) {
+    throw new CariPayError("confirmUrl은 HTTPS여야 합니다. 로컬 개발에서는 localhost HTTP만 허용됩니다.");
+  }
+  return value;
+}
+
+function numberOrNull(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
 export class CariPay {
   /**
    * @param {object} o
@@ -191,7 +212,7 @@ export class CariPay {
       PAY_USER_NAME: req(payerName, "payerName"),
       REQUEST_REASON: req(reason, "reason"),
       INFO_MESSAGE: infoMessage,
-      CONFIRM_URL: req(confirmUrl, "confirmUrl"),
+      CONFIRM_URL: checkCallbackUrl(confirmUrl),
       orderType,
       ...(items ? { ITEMS: items } : {}),
     });
@@ -209,8 +230,8 @@ export class CariPay {
       status: d.APPROVE_STATUS ?? null,
       paid: d.APPROVE_STATUS === APPROVED,
       canceled: CANCELED.has(d.APPROVE_STATUS),
-      amount: d.APPROVAL_AMOUNT ?? null,
-      cancelAmount: d.CANCEL_AMOUNT ?? null,
+      amount: numberOrNull(d.APPROVAL_AMOUNT),
+      cancelAmount: numberOrNull(d.CANCEL_AMOUNT),
       approvedAt: d.APPROVAL_DATETIME ?? null,
       approvalNumber: d.APPROVAL_NUMBER ?? null,
       methodName: d.METHOD_NAME ?? null,
@@ -235,7 +256,7 @@ export class CariPay {
       APPROVAL_AMOUNT: checkAmount(amt),
       MOBILE_NO: checkMobile(phone),
     });
-    return { transSeqno: seq, canceledAmount: d.APPROVAL_AMOUNT ?? null, raw: d };
+    return { transSeqno: seq, canceledAmount: numberOrNull(d.APPROVAL_AMOUNT), raw: d };
   }
 
   /** 미결제 청구서 삭제 (승인건 환불은 cancelPayment) */

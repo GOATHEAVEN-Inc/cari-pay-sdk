@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: CARI PAY Gateway API
-  version: "1.0.0"
+  version: "1.0.1"
   description: |
     CARI PAY 결제 게이트웨이. 결제 생성 / 조회 / 취소 3개 엔드포인트 + 파트너 콜백 1개로 연동이 끝납니다.
 
@@ -120,7 +120,7 @@ paths:
       description: |
         결제 생성 시 넘긴 `CONFIRM_URL`로 CARI PAY가 POST 합니다. 사전 등록이 필요 없습니다.
 
-        - 전송 실패 시 자동 재시도(Outbox 큐) → **중복 도달을 전제로 설계**하세요.
+        - 네트워크 상황에 따라 지연·누락·중복 도달할 수 있으므로 **중복 도달을 전제로 설계**하세요.
         - 본문만 믿지 말고 수신 즉시 `searchPayment`로 `APPROVE_COMPLETE`를 재확인하세요.
         - 이미 처리된 거래면 200만 응답하고 무시합니다(멱등).
         - 재전송 폭주를 막으려면 먼저 200을 응답하고 처리는 비동기로 돌립니다.
@@ -135,7 +135,7 @@ paths:
                   type: string
       responses:
         '200':
-          description: 수신 확인. 200 외 응답은 재시도됩니다.
+          description: 파트너 수신 확인. 재전송 조건과 횟수는 개통 시 제공되는 운영 규격을 따릅니다.
 
 components:
   schemas:

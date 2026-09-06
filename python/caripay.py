@@ -16,6 +16,7 @@ import random
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Sequence
@@ -88,6 +89,24 @@ def _check_seqno(trans_seqno: Any) -> str:
     if len(text) > 64:
         raise CariPayError("trans_seqno는 64자 이하여야 합니다.")
     return text
+
+
+def _check_callback_url(confirm_url: Any) -> str:
+    value = str(_required(confirm_url, "confirm_url"))
+    parsed = urllib.parse.urlparse(value)
+    local = parsed.hostname in ("localhost", "127.0.0.1")
+    if not parsed.hostname or (parsed.scheme != "https" and not (local and parsed.scheme == "http")):
+        raise CariPayError("confirm_url은 HTTPS여야 합니다. 로컬 개발에서는 localhost HTTP만 허용됩니다.")
+    return value
+
+
+def _number_or_none(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class CariPay:
@@ -177,7 +196,7 @@ class CariPay:
             "PAY_USER_NAME": _required(payer_name, "payer_name"),
             "REQUEST_REASON": _required(reason, "reason"),
             "INFO_MESSAGE": info_message,
-            "CONFIRM_URL": _required(confirm_url, "confirm_url"),
+            "CONFIRM_URL": _check_callback_url(confirm_url),
             "orderType": order_type,
         }
         if items:
@@ -197,8 +216,8 @@ class CariPay:
             "status": status,
             "paid": status == APPROVED,
             "canceled": status in _CANCELED,
-            "amount": data.get("APPROVAL_AMOUNT"),
-            "cancel_amount": data.get("CANCEL_AMOUNT"),
+            "amount": _number_or_none(data.get("APPROVAL_AMOUNT")),
+            "cancel_amount": _number_or_none(data.get("CANCEL_AMOUNT")),
             "approved_at": data.get("APPROVAL_DATETIME"),
             "approval_number": data.get("APPROVAL_NUMBER"),
             "method_name": data.get("METHOD_NAME"),
@@ -221,7 +240,7 @@ class CariPay:
             "APPROVAL_AMOUNT": _check_amount(amount),
             "MOBILE_NO": _check_mobile(mobile_no),
         })
-        return {"trans_seqno": seqno, "canceled_amount": data.get("APPROVAL_AMOUNT"), "raw": data}
+        return {"trans_seqno": seqno, "canceled_amount": _number_or_none(data.get("APPROVAL_AMOUNT")), "raw": data}
 
     def delete_bill(self, trans_seqno: str, amount: Any, mobile_no: str) -> Dict[str, Any]:
         """미결제 청구서 삭제. 승인건 환불은 cancel_payment."""

@@ -153,4 +153,4 @@ curl -X POST https://dev-api.chewingpay.com/api/requestPayment \
 - [ ] 운영 키로 환경변수 교체 (`CARIPAY_MODE=live`)
 - [ ] `API_KEY`가 코드·로그·클라이언트 번들에 없음
 
-전체 도입 절차·서류·정산은 [CARI PAY 연동가이드](../CARI-PAY-연동가이드.pdf), 문의는 https://caripay.co.kr/contact
+전체 도입 절차·서류·정산은 [CARI PAY 연동가이드](https://caripay.co.kr/downloads/CARI-PAY_partner-guide_v1.1_2026-08-17.pdf), 문의는 https://caripay.co.kr/contact
