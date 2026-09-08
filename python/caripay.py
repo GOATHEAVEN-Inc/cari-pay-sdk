@@ -35,6 +35,107 @@ APPROVED = "APPROVE_COMPLETE"
 _CANCELED = {"CANCEL_COMPLETE", "STORE_DELETE"}
 _KST = timezone(timedelta(hours=9))
 
+BILLING_BASE_URLS = {"test": "https://api.dev.chewing.io", "live": "https://api.caripay.co.kr"}
+
+
+class _NoBillingRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # Never forward a merchant token to a redirected host.
+
+
+class CariPayBilling:
+    """가맹점 청구 API: 청구서 생성과 카리 알림톡 발송. 결제 API_KEY가 아닌 가맹점 토큰 사용."""
+
+    def __init__(self, *, access_token: str, mode: str = "test", base_url: Optional[str] = None,
+                 timeout: float = 10):
+        if not isinstance(access_token, str) or not access_token or re.search(r"\s", access_token):
+            raise CariPayError("가맹점 청구 API access_token이 필요합니다. 결제 API_KEY와 다릅니다.")
+        value = base_url or BILLING_BASE_URLS.get(mode, "")
+        try:
+            url = urllib.parse.urlsplit(value)
+            local = url.hostname in ("localhost", "127.0.0.1", "::1")
+            valid = url.hostname and (url.scheme == "https" or (local and url.scheme == "http"))
+            valid = valid and not (url.username or url.password or url.query or url.fragment)
+        except ValueError:
+            valid = False
+        if not valid:
+            raise CariPayError("올바른 HTTPS 청구 API 주소가 필요합니다.")
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout < float("inf"):
+            raise CariPayError("timeout은 양수여야 합니다.")
+        self.base_url = value.rstrip("/")
+        self.access_token = access_token
+        self.timeout = timeout
+        self._opener = urllib.request.build_opener(_NoBillingRedirect())
+
+    @classmethod
+    def from_env(cls, env=None):
+        env = os.environ if env is None else env
+        return cls(access_token=env.get("CARIPAY_BILLING_ACCESS_TOKEN"),
+                   mode=env.get("CARIPAY_MODE", "test"), base_url=env.get("CARIPAY_BILLING_BASE_URL"))
+
+    def _call(self, path, body=None):
+        request = urllib.request.Request(self.base_url + path,
+            data=None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json", "x-access-token": self.access_token},
+            method="GET" if body is None else "POST")
+        try:
+            with self._opener.open(request, timeout=self.timeout) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as error:
+            raise CariPayError(f"청구 API 요청 실패 (HTTP {error.code})", code=str(error.code)) from None
+        except (urllib.error.URLError, OSError):
+            raise CariPayError("청구 API 응답을 받지 못했습니다. 같은 request_id와 내용으로만 재시도하세요.") from None
+        try:
+            data = json.loads(raw)
+        except (ValueError, UnicodeError):
+            raise CariPayError("청구 API 응답 형식 오류") from None
+        if not isinstance(data, dict) or type(data.get("result_code")) not in (int, str) or data.get("result_code") not in (0, "0"):
+            raise CariPayError("청구 API 요청 실패", code=str(data.get("result_code")) if isinstance(data, dict) else None)
+        return data.get("result_data")
+
+    def send_invoice(self, *, request_id: str, amount: int, recipient: dict, reason: str, message: str = ""):
+        """성공은 접수만 의미. 주문별 request_id를 저장하고 같은 요청 재시도 시 재사용하세요."""
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", request_id):
+            raise CariPayError("request_id는 영숫자/_/- 8~64자여야 합니다.")
+        if type(amount) is not int or not 100 <= amount <= 2147483647:
+            raise CariPayError("청구 금액은 100~2147483647원 사이의 정수여야 합니다.")
+
+        def text(value, maximum, label, optional=False):
+            if not isinstance(value, str) or (not optional and not value.strip()) or len(value) > maximum or re.search(r"[\r\n]", value):
+                raise CariPayError(f"{label} 형식이 올바르지 않습니다 (한 줄, 최대 {maximum}자).")
+            return value.strip()
+
+        if not isinstance(recipient, dict):
+            raise CariPayError("수신자 정보가 필요합니다.")
+        name = text(recipient.get("name"), 30, "수신자 이름")
+        phone = recipient.get("phone")
+        phone = re.sub(r"[ -]", "", phone) if isinstance(phone, str) else ""
+        if not re.fullmatch(r"[0-9]{10,11}", phone):
+            raise CariPayError("수신자 전화번호는 숫자 10~11자리여야 합니다.")
+        self._call("/app/v1/sales/bill", {
+            "templateType": "SAME", "billTemplateId": None, "requestId": request_id, "amount": amount,
+            "reason": text(reason, 60, "청구 사유"), "description": text(message, 200, "안내문", True),
+            "members": [{"studentName": name, "studentPhone": phone, "guardianPhone": None,
+                         "studentBirthDate": None, "classroomId": None}],
+            "items": None, "relatedSubject": None, "etc": None,
+        })
+        return {"accepted": True, "request_id": request_id}
+
+    def list_invoices(self, *, page: int = 1, size: int = 10, month: Optional[str] = None):
+        if type(page) is not int or page < 1 or type(size) is not int or not 1 <= size <= 100:
+            raise CariPayError("page는 1 이상, size는 1~100 사이의 정수여야 합니다.")
+        if month is not None and (not isinstance(month, str) or not re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", month)):
+            raise CariPayError("month는 yyyy-MM 형식이어야 합니다.")
+        query = {"page": page, "size": size}
+        if month is not None:
+            query["month"] = month
+        return self._call("/app/v1/sales/bill?" + urllib.parse.urlencode(query))
+
+    def get_invoice(self, invoice_id: str):
+        if not isinstance(invoice_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", invoice_id):
+            raise CariPayError("유효한 청구서 ID가 필요합니다.")
+        return self._call("/app/v1/sales/bill/" + urllib.parse.quote(invoice_id, safe=""))
+
 
 class CariPayError(Exception):
     def __init__(self, message: str, code: Optional[str] = None,

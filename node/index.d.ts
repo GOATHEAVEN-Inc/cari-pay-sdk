@@ -1,4 +1,21 @@
 export declare const BASE_URLS: { test: string; live: string };
+export declare const BILLING_BASE_URLS: { test: string; live: string };
+export interface SendInvoiceInput {
+  /** 주문별로 저장. 응답이 유실되어도 같은 내용에는 같은 ID를 사용. */
+  requestId: string;
+  amount: number;
+  recipient: { name: string; phone: string };
+  reason: string;
+  message?: string;
+}
+export declare class CariPayBilling {
+  constructor(o: { accessToken: string; mode?: "test" | "live"; baseUrl?: string; timeoutMs?: number; fetch?: typeof fetch });
+  static fromEnv(env?: Record<string, string | undefined>): CariPayBilling;
+  /** 접수 결과. 고객 도착 또는 결제 성공을 의미하지 않습니다. */
+  sendInvoice(input: SendInvoiceInput): Promise<{ accepted: true; requestId: string }>;
+  listInvoices(options?: { page?: number; size?: number; month?: string }): Promise<Record<string, unknown>>;
+  getInvoice(id: string): Promise<Record<string, unknown>>;
+}
 export declare const APPROVED: "APPROVE_COMPLETE";
 
 export type ApproveStatus =

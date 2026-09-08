@@ -12,6 +12,75 @@ cari-pay-sdk/
 
 지원 언어에 없다면 `openapi.yaml`로 클라이언트를 생성하거나(아래 참고), 아래 curl 규격 그대로 직접 호출하면 됩니다.
 
+## 카리 플친으로 청구서 보내기 (v1.1)
+
+온라인 주문, 예약금, 방문 서비스, 매장 외상 등 **아직 납부하지 않은 금액**을 안내할 때 사용합니다.
+상품별 알리고 템플릿 등록 없이, 카리(CARI) 채널의 승인된 범용 청구서 `UK_8980`에 고객명·청구 사유·금액을 넣습니다.
+알리고 계정·발신 프로필·템플릿 코드는 연동 업체가 직접 전달하지 않습니다.
+
+| 필요한 기능 | 호출 | 인증 |
+|---|---|---|
+| 결제 링크만 만들기 | `CariPay.createPayment()` | 결제 플랫폼·매장 코드와 서명키 |
+| 청구서를 만들고 카리 알림톡으로 보내기 | `CariPayBilling.sendInvoice()` | 해당 가맹점의 청구 API 접근 토큰 |
+| 접수 후 발송/납부 내역 확인 | `listInvoices()` → `getInvoice(id)` | 같은 가맹점 토큰 |
+
+**두 생성 함수를 같은 주문에 모두 호출하지 마세요.** 청구서 API가 결제 링크도 생성합니다.
+`createPayment()`의 기존 동작은 그대로이며, 이를 호출한다고 메시지가 자동 발송되지는 않습니다.
+단말기에서 이미 결제된 거래에는 이 청구 API를 호출하지 않습니다. 이 양식은 결제 완료 영수증이 아닙니다.
+
+### 업체별 준비
+
+1. 카리페이에 가맹점·결제 가맹 코드 등록과 청구 기능 승인을 완료합니다.
+2. 해당 가맹점 계정의 청구 API 토큰을 서버에만 보관합니다. 기존 `API_KEY`를 대신 넣으면 안 됩니다.
+   토큰 발급·갱신은 가맹점 인증 절차를 따르며 이 SDK가 로그인하거나 권한을 자동 발급하지 않습니다.
+3. 발송 비용·잔액 조건과 수신자 연락처를 확인합니다. 다른 업체의 토큰을 공유해서 사용하지 않습니다.
+4. 운영에서는 `CARIPAY_MODE=live`를 명시합니다. 기본값은 테스트 서버입니다.
+
+```js
+import { CariPayBilling } from "@caripay/sdk";
+
+// CARIPAY_BILLING_ACCESS_TOKEN: 해당 가맹점의 접근 토큰 (서버 환경변수)
+// CARIPAY_MODE=live: 실제 고객에게 발송하는 운영 환경에서만 설정
+const billing = CariPayBilling.fromEnv();
+const result = await billing.sendInvoice({
+  requestId: "order_20260908_001", // 주문 DB에 저장. 같은 요청 재시도는 같은 ID 사용
+  amount: 128000,
+  recipient: { name: "고객명", phone: process.env.CUSTOMER_PHONE },
+  reason: "방문 수리비",
+  message: "청구 내역을 확인해 주세요.",
+});
+// { accepted: true, requestId: "order_20260908_001" } = 접수. 도착/결제 완료 아님.
+const list = await billing.listInvoices({ month: "2026-09", page: 1, size: 10 });
+// 목록에서 얻은 청구서 id로 billing.getInvoice(id): 발송 이력과 납부 상태 확인
+```
+
+```python
+import os
+from caripay import CariPayBilling
+
+billing = CariPayBilling.from_env()
+result = billing.send_invoice(
+    request_id="order_20260908_001",
+    amount=128000,
+    recipient={"name": "고객명", "phone": os.environ["CUSTOMER_PHONE"]},
+    reason="예약금",
+    message="예약 내용을 확인해 주세요.",
+)
+```
+
+`requestId`/`request_id`는 가맹점·주문별로 보관하세요. 같은 ID와 같은 요청은 서버가 중복 처리를 막고,
+같은 ID에 다른 내용을 보내면 거부합니다. 통신 오류가 나도 새로운 ID로 다시 보내지 마세요.
+SDK는 발송 요청을 자동 재시도하지 않습니다. 접수 후 결과는 청구 내역에서 확인합니다.
+
+수신자 이름은 30자, 청구 사유는 60자, 안내문은 200자 이내의 한 줄입니다. 광고·판촉 문구는 넣지 않습니다.
+청구 금액은 정수 100원 이상입니다. 사업자명은 입력값이 아닌 등록된 가맹점 정보에서 가져옵니다.
+범용 템플릿을 사용할 수 없는 경우 운영 서버의 기존 대체 발송 정책이 적용될 수 있습니다.
+
+직접 HTTP 연동: [청구 API 규격](billing-openapi.yaml). 결제 서명 API 규격과 인증 방식이 다릅니다.
+이 API는 비동기 발송이며 응답에는 결제 링크나 청구서 ID가 포함되지 않습니다. 결과를 결제 성공으로 처리하지 마세요.
+
+---
+
 ---
 
 ## 0. 먼저 받을 것 4가지
