@@ -6,6 +6,7 @@
 ```
 cari-pay-sdk/
 ├── openapi.yaml            # API 정식 규격 (Swagger UI·클라이언트 생성기용)
+├── billing-openapi.yaml    # 청구서 생성·알림톡 발송 규격 (가맹점 토큰)
 ├── node/                   # JavaScript / TypeScript SDK  (의존성 0개, Node 18+)
 └── python/                 # Python SDK                    (표준 라이브러리만, 3.9+)
 ```
@@ -34,13 +35,17 @@ cari-pay-sdk/
 2. 해당 가맹점 계정의 청구 API 토큰을 서버에만 보관합니다. 기존 `API_KEY`를 대신 넣으면 안 됩니다.
    토큰 발급·갱신은 가맹점 인증 절차를 따르며 이 SDK가 로그인하거나 권한을 자동 발급하지 않습니다.
 3. 발송 비용·잔액 조건과 수신자 연락처를 확인합니다. 다른 업체의 토큰을 공유해서 사용하지 않습니다.
-4. 운영에서는 `CARIPAY_MODE=live`를 명시합니다. 기본값은 테스트 서버입니다.
+4. 운영에서는 `CARIPAY_MODE=live`를 명시합니다. 기본값 `test`는 개발 서버 주소를 선택합니다.
+
+`test`는 발송을 막는 모의 실행 옵션이 아닙니다. 개발 서버에 발송 기능이 연결되어 있으면 실제 메시지와 비용이 발생할 수 있고,
+템플릿 설정도 운영과 다를 수 있습니다. 발송 없는 검증은 `npm test`의 모의 테스트를 사용하세요.
+실제 호출 검증에는 동의한 테스트 수신자만 사용하고 일반 고객 번호를 넣지 마세요.
 
 ```js
 import { CariPayBilling } from "@caripay/sdk";
 
 // CARIPAY_BILLING_ACCESS_TOKEN: 해당 가맹점의 접근 토큰 (서버 환경변수)
-// CARIPAY_MODE=live: 실제 고객에게 발송하는 운영 환경에서만 설정
+// CARIPAY_MODE=live: 운영 서버 선택. test도 발송 차단을 보장하지 않음
 const billing = CariPayBilling.fromEnv();
 const result = await billing.sendInvoice({
   requestId: "order_20260908_001", // 주문 DB에 저장. 같은 요청 재시도는 같은 ID 사용
@@ -78,8 +83,6 @@ SDK는 발송 요청을 자동 재시도하지 않습니다. 접수 후 결과�
 
 직접 HTTP 연동: [청구 API 규격](billing-openapi.yaml). 결제 서명 API 규격과 인증 방식이 다릅니다.
 이 API는 비동기 발송이며 응답에는 결제 링크나 청구서 ID가 포함되지 않습니다. 결과를 결제 성공으로 처리하지 마세요.
-
----
 
 ---
 

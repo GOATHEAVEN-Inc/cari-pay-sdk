@@ -7,9 +7,10 @@ info:
     결제 링크 생성용 API_SIGN과 다른 인증을 사용한다. 업체별 청구 기능 등록이 필요하다.
     같은 주문에 requestPayment와 이 API를 함께 호출하면 별도 청구가 생성되므로 한 경로만 사용한다.
     발송 접수 성공은 고객 도착 또는 결제 완료가 아니다. 과거 실패 건을 자동 재발송하지 않는다.
+    개발 서버도 모의 발송을 보장하지 않는다. 실제 고객 번호로 테스트하지 않는다.
 servers:
   - url: https://api.dev.chewing.io
-    description: 테스트 (별도 테스트 가맹점 토큰 필요)
+    description: 개발 (별도 가맹점 토큰 필요, 실제 발송·비용 발생 가능)
   - url: https://api.caripay.co.kr
     description: 운영 (실제 발송 및 비용 발생)
 security:
