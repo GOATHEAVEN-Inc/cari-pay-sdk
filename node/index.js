@@ -7,6 +7,98 @@ export const BASE_URLS = {
   live: "https://api.chewingpay.com",
 };
 
+export const BILLING_BASE_URLS = {
+  test: "https://api.dev.chewing.io",
+  live: "https://api.caripay.co.kr",
+};
+
+/** 청구서 생성 + 카리 알림톡 발송. 결제 링크 생성 API와 별개의 가맹점 인증을 사용한다. */
+export class CariPayBilling {
+  constructor({ accessToken, mode = "test", baseUrl, timeoutMs = 10_000, fetch: f } = {}) {
+    if (typeof accessToken !== "string" || !accessToken.trim() || /\s/.test(accessToken)) {
+      throw new CariPayError("가맹점 청구 API accessToken이 필요합니다. 결제 서명 API_KEY와 다릅니다.");
+    }
+    let url;
+    try { url = new URL(baseUrl || BILLING_BASE_URLS[mode]); } catch {
+      throw new CariPayError("올바른 청구 API mode 또는 baseUrl이 필요합니다.");
+    }
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if ((url.protocol !== "https:" && !(local && url.protocol === "http:"))
+      || url.username || url.password || url.search || url.hash) throw new CariPayError("청구 API는 HTTPS를 사용해야 합니다.");
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new CariPayError("timeoutMs는 양수여야 합니다.");
+    this.baseUrl = url.href.replace(/\/+$/, "");
+    this.accessToken = accessToken;
+    this.timeoutMs = timeoutMs;
+    this.fetch = f || globalThis.fetch;
+  }
+
+  static fromEnv(env = process.env) {
+    return new CariPayBilling({ accessToken: env.CARIPAY_BILLING_ACCESS_TOKEN,
+      mode: env.CARIPAY_MODE || "test", baseUrl: env.CARIPAY_BILLING_BASE_URL });
+  }
+
+  async #call(path, body) {
+    let res;
+    try {
+      res = await this.fetch(this.baseUrl + path, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { "Content-Type": "application/json", "x-access-token": this.accessToken },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        redirect: "error", signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch {
+      // Do not retry: the server may already have accepted a paid notification request.
+      throw new CariPayError("청구 API 응답을 받지 못했습니다. 발송 요청은 같은 requestId와 내용으로만 재시도하세요.");
+    }
+    let json;
+    try { json = await res.json(); } catch { throw new CariPayError(`청구 API 응답 형식 오류 (HTTP ${res.status})`); }
+    if (!res.ok || ![0, "0"].includes(json?.result_code)) {
+      // Server error text can contain customer data. Return only the machine code/status.
+      throw new CariPayError(`청구 API 요청 실패 (HTTP ${res.status})`, { code: json?.result_code });
+    }
+    return json.result_data;
+  }
+
+  /** 성공은 발송 접수이며 고객 도착/결제 완료가 아니다. requestId는 주문별로 저장해서 재사용한다. */
+  async sendInvoice({ requestId, amount, recipient, reason, message = "" } = {}) {
+    if (typeof requestId !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(requestId)) {
+      throw new CariPayError("requestId는 영숫자/_/- 8~64자여야 합니다.");
+    }
+    if (!Number.isSafeInteger(amount) || amount < 100 || amount > 2147483647) {
+      throw new CariPayError("청구 금액은 100~2147483647원 사이의 정수여야 합니다.");
+    }
+    const text = (value, max, name, optional = false) => {
+      if (typeof value !== "string" || (!optional && !value.trim()) || value.length > max || /[\r\n]/.test(value)) {
+        throw new CariPayError(`${name} 형식이 올바르지 않습니다 (한 줄, 최대 ${max}자).`);
+      }
+      return value.trim();
+    };
+    const name = text(recipient?.name, 30, "수신자 이름");
+    const phone = typeof recipient?.phone === "string" ? recipient.phone.replace(/[ -]/g, "") : "";
+    if (!/^\d{10,11}$/.test(phone)) throw new CariPayError("수신자 전화번호는 숫자 10~11자리여야 합니다.");
+    const body = { templateType: "SAME", billTemplateId: null, requestId, amount,
+      reason: text(reason, 60, "청구 사유"), description: text(message, 200, "안내문", true),
+      members: [{ studentName: name, studentPhone: phone, guardianPhone: null, studentBirthDate: null, classroomId: null }],
+      items: null, relatedSubject: null, etc: null };
+    await this.#call("/app/v1/sales/bill", body);
+    return { accepted: true, requestId };
+  }
+
+  async listInvoices({ page = 1, size = 10, month } = {}) {
+    if (!Number.isSafeInteger(page) || page < 1 || !Number.isSafeInteger(size) || size < 1 || size > 100) {
+      throw new CariPayError("page는 1 이상, size는 1~100 사이의 정수여야 합니다.");
+    }
+    if (month !== undefined && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new CariPayError("month는 yyyy-MM 형식이어야 합니다.");
+    const query = new URLSearchParams({ page: String(page), size: String(size), ...(month === undefined ? {} : { month }) });
+    return this.#call(`/app/v1/sales/bill?${query}`);
+  }
+
+  async getInvoice(id) {
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new CariPayError("유효한 청구서 ID가 필요합니다.");
+    return this.#call(`/app/v1/sales/bill/${encodeURIComponent(id)}`);
+  }
+}
+
 const PATHS = {
   create: "/api/requestPayment",
   search: "/api/searchPayment",
