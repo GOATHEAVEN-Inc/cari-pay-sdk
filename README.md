@@ -60,6 +60,7 @@ const result = await billing.sendInvoice({
   message: "청구 내역을 확인해 주세요.",
   channel: "ALIMTALK_THEN_SMS",     // ALIMTALK | SMS | ALIMTALK_THEN_SMS
   webhookUrl: "https://api.example.com/caripay/invoice-hook", // 선택: 결제 완료·취소 알림(POST). 수신 후 getInvoice 로 확인
+  webhookSecret: process.env.CARIPAY_WEBHOOK_SECRET,          // 선택: 있으면 X-CariPay-Signature 로 서명 (ASCII 16~128자)
 });
 // { accepted: true, requestId: "order_20260908_001" } = 접수. 도착/결제 완료 아님.
 const list = await billing.listInvoices({ month: "2026-09", page: 1, size: 10 });
@@ -79,7 +80,26 @@ result = billing.send_invoice(
     message="예약 내용을 확인해 주세요.",
     channel="ALIMTALK_THEN_SMS",   # ALIMTALK | SMS | ALIMTALK_THEN_SMS
     webhook_url="https://api.example.com/caripay/invoice-hook",  # 선택: 결제 완료·취소 알림(POST)
+    webhook_secret=os.environ.get("CARIPAY_WEBHOOK_SECRET"),      # 선택: 있으면 X-CariPay-Signature 로 서명
 )
+```
+
+웹훅 수신 서버에서는 **파싱 전 본문 원문**과 `X-CariPay-Signature` 헤더로 서명을 검증합니다(허용 오차 5분).
+
+```js
+import { verifyWebhookSignature } from "@caripay/sdk";
+app.post("/caripay/invoice-hook", express.raw({ type: "application/json" }), (req, res) => {
+  if (!verifyWebhookSignature({ secret: process.env.CARIPAY_WEBHOOK_SECRET, signature: req.get("X-CariPay-Signature"), body: req.body })) {
+    return res.sendStatus(400);
+  }
+  res.sendStatus(200);
+  // 이후 getInvoice(billId) 로 상태를 확정
+});
+```
+
+```python
+from caripay import verify_webhook_signature
+ok = verify_webhook_signature(os.environ["CARIPAY_WEBHOOK_SECRET"], request.headers.get("X-CariPay-Signature"), request.get_data())
 ```
 
 `requestId`/`request_id`는 가맹점·주문별로 보관하세요. 같은 ID와 같은 요청은 서버가 중복 처리를 막고,

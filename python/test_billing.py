@@ -2,7 +2,7 @@
 import io
 import json
 import urllib.error
-from caripay import CariPayBilling, CariPayError, _NoBillingRedirect
+from caripay import CariPayBilling, CariPayError, _NoBillingRedirect, verify_webhook_signature
 
 class Opener:
     def __init__(self, response=None, error=None):
@@ -77,6 +77,23 @@ assert json.loads(billing._opener.calls[-1].data)["webhookUrl"] == "https://part
 billing.send_invoice(**invoice)
 assert "webhookUrl" not in json.loads(billing._opener.calls[-1].data)
 fails(lambda: billing.send_invoice(**{**invoice, "webhook_url": "http://partner.example/hook"}))
+# 웹훅 서명 비밀: URL 과 함께, ASCII 16~128자
+billing.send_invoice(**{**invoice, "webhook_url": "https://partner.example/caripay/hook", "webhook_secret": "whsec_0123456789abcdef"})
+assert json.loads(billing._opener.calls[-1].data)["webhookSecret"] == "whsec_0123456789abcdef"
+fails(lambda: billing.send_invoice(**{**invoice, "webhook_secret": "whsec_0123456789abcdef"}))
+fails(lambda: billing.send_invoice(**{**invoice, "webhook_url": "https://partner.example/hook", "webhook_secret": "short"}))
+fails(lambda: billing.send_invoice(**{**invoice, "webhook_url": "https://partner.example/hook", "webhook_secret": "has space in the secret!"}))
+
+# 웹훅 서명 검증: 서버와 같은 벡터, 허용 오차, 변조
+_body = '{"event":"bill.paid"}'
+_sig = "t=1758430800,v1=ae201a94ae2764a1f463601781a180495c5cdd9de3b7a29c09004cca3a251387"
+assert verify_webhook_signature("whsec_0123456789abcdef", _sig, _body, now=1758430800)
+assert verify_webhook_signature("whsec_0123456789abcdef", _sig, _body.encode(), now=1758430800 + 299)
+assert not verify_webhook_signature("whsec_0123456789abcdef", _sig, _body, now=1758430800 + 301)
+assert not verify_webhook_signature("whsec_0123456789abcdef", _sig, '{"event":"bill.canceled"}', now=1758430800)
+assert not verify_webhook_signature("whsec_other_secret_value", _sig, _body, now=1758430800)
+assert not verify_webhook_signature("whsec_0123456789abcdef", "t=1758430800,v1=00", _body, now=1758430800)
+assert not verify_webhook_signature("whsec_0123456789abcdef", None, _body, now=1758430800)
 
 
 class RoutingOpener:

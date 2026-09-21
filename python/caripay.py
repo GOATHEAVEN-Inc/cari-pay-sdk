@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import random
@@ -59,6 +60,29 @@ def _billing_base_url(mode: str, base_url: Optional[str]) -> str:
 class _NoBillingRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None  # Never forward a merchant token to a redirected host.
+
+
+_WEBHOOK_SECRET_RE = re.compile(r"[\x21-\x7E]{16,128}")
+_SIGNATURE_RE = re.compile(r"t=(\d{1,12}),v1=([0-9a-f]{64})")
+
+
+def verify_webhook_signature(secret: str, signature: Optional[str], body, tolerance_sec: int = 300,
+                             now: Optional[int] = None) -> bool:
+    """청구서 웹훅 서명 검증. signature = 요청 헤더 X-CariPay-Signature("t=<unix초>,v1=<hex>"),
+    body = 받은 본문 원문(bytes 또는 str). v1 = HMAC-SHA256(secret, f"{t}.{body}").
+    서명이 맞고 t 가 tolerance_sec(기본 5분) 안이면 True. 검증 뒤에도 확정은 get_invoice 로 한다."""
+    if not isinstance(secret, str) or not secret or not isinstance(signature, str):
+        return False
+    match = _SIGNATURE_RE.fullmatch(signature.strip())
+    if not match:
+        return False
+    t = int(match.group(1))
+    current = int(time.time()) if now is None else int(now)
+    if abs(current - t) > tolerance_sec:
+        return False
+    raw = body if isinstance(body, (bytes, bytearray)) else str(body if body is not None else "").encode("utf-8")
+    expected = hmac.new(secret.encode("utf-8"), f"{t}.".encode("utf-8") + bytes(raw), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, match.group(2))
 
 
 class CariPayBilling:
@@ -158,7 +182,7 @@ class CariPayBilling:
         return data.get("result_data")
 
     def send_invoice(self, *, request_id: str, amount: int, recipient: dict, reason: str, message: str = "",
-                     channel: str = "ALIMTALK", webhook_url: Optional[str] = None):
+                     channel: str = "ALIMTALK", webhook_url: Optional[str] = None, webhook_secret: Optional[str] = None):
         """성공은 접수만 의미. 주문별 request_id를 저장하고 같은 요청 재시도 시 재사용하세요."""
         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", request_id):
             raise CariPayError("request_id는 영숫자/_/- 8~64자여야 합니다.")
@@ -168,6 +192,11 @@ class CariPayBilling:
             parsed = urllib.parse.urlsplit(str(webhook_url))
             if parsed.scheme != "https" or not parsed.hostname or re.search(r"\s", str(webhook_url)) or len(str(webhook_url)) > 500:
                 raise CariPayError("webhook_url은 500자 이하의 https:// 주소여야 합니다.")
+        if webhook_secret is not None:
+            if not webhook_url:
+                raise CariPayError("webhook_secret은 webhook_url과 함께 써야 합니다.")
+            if not isinstance(webhook_secret, str) or not _WEBHOOK_SECRET_RE.fullmatch(webhook_secret):
+                raise CariPayError("webhook_secret은 공백 없는 ASCII 16~128자여야 합니다.")
         if type(amount) is not int or not 100 <= amount <= 2147483647:
             raise CariPayError("청구 금액은 100~2147483647원 사이의 정수여야 합니다.")
 
@@ -193,6 +222,8 @@ class CariPayBilling:
         }
         if webhook_url:
             body["webhookUrl"] = str(webhook_url)
+        if webhook_secret:
+            body["webhookSecret"] = webhook_secret
         self._call("/app/v1/sales/bill", body)
         return {"accepted": True, "request_id": request_id}
 

@@ -1,6 +1,6 @@
 // @caripay/sdk — CARI PAY 결제 게이트웨이 SDK
 // 의존성 0개 (node:crypto + 내장 fetch). Node 18+
-import { createHash, randomInt } from "node:crypto";
+import { createHash, createHmac, randomInt, timingSafeEqual } from "node:crypto";
 
 export const BASE_URLS = {
   test: "https://dev-api.chewingpay.com",
@@ -15,6 +15,24 @@ export const BILLING_BASE_URLS = {
 
 /** 청구서 발송 수단. ALIMTALK=카카오 알림톡, SMS=문자, ALIMTALK_THEN_SMS=알림톡 실패 시 문자 */
 export const SEND_CHANNELS = ["ALIMTALK", "SMS", "ALIMTALK_THEN_SMS"];
+const WEBHOOK_SECRET_RE = /^[\x21-\x7E]{16,128}$/;
+
+/**
+ * 청구서 웹훅 서명 검증. `signature` 는 요청 헤더 X-CariPay-Signature("t=<unix초>,v1=<hex>"),
+ * `body` 는 받은 본문 원문(파싱 전 문자열 또는 Buffer). v1 = HMAC-SHA256(secret, `${t}.${body}`).
+ * 서명이 맞고 t 가 toleranceSec(기본 5분) 안이면 true. 검증 뒤에도 확정은 getInvoice 로 한다.
+ */
+export function verifyWebhookSignature({ secret, signature, body, toleranceSec = 300, now = Math.floor(Date.now() / 1000) } = {}) {
+  if (typeof secret !== "string" || !secret || typeof signature !== "string") return false;
+  const m = /^t=(\d{1,12}),v1=([0-9a-f]{64})$/.exec(signature.trim());
+  if (!m) return false;
+  const t = Number(m[1]);
+  if (typeof toleranceSec !== "number" || Math.abs(now - t) > toleranceSec) return false;
+  const raw = Buffer.isBuffer(body) ? body : Buffer.from(String(body ?? ""), "utf8");
+  const expected = createHmac("sha256", secret).update(`${t}.`).update(raw).digest();
+  const given = Buffer.from(m[2], "hex");
+  return expected.length === given.length && timingSafeEqual(expected, given);
+}
 const TOKEN_ERROR_CODES = new Set([-1, -2, "-1", "-2"]); // 토큰 없음 / 토큰 만료
 
 function billingBaseUrl(mode, baseUrl) {
@@ -133,16 +151,20 @@ export class CariPayBilling {
   }
 
   /** 성공은 발송 접수이며 고객 도착/결제 완료가 아니다. requestId는 주문별로 저장해서 재사용한다. */
-  async sendInvoice({ requestId, amount, recipient, reason, message = "", channel = "ALIMTALK", webhookUrl } = {}) {
+  async sendInvoice({ requestId, amount, recipient, reason, message = "", channel = "ALIMTALK", webhookUrl, webhookSecret } = {}) {
     if (typeof requestId !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(requestId)) {
       throw new CariPayError("requestId는 영숫자/_/- 8~64자여야 합니다.");
     }
     if (!SEND_CHANNELS.includes(channel)) throw new CariPayError(`channel은 ${SEND_CHANNELS.join(" | ")} 중 하나여야 합니다: ${channel}`);
-    // 결제 완료·취소 웹훅. HTTPS 만. 본문에 서명이 없으므로 수신 후 getInvoice 로 상태를 확인한다.
+    // 결제 완료·취소 웹훅. HTTPS 만. webhookSecret 을 주면 전송마다 X-CariPay-Signature 가 붙는다(verifyWebhookSignature 로 검증).
     if (webhookUrl !== undefined && webhookUrl !== null) {
       let u;
       try { u = new URL(String(webhookUrl)); } catch { throw new CariPayError("webhookUrl은 유효한 URL이어야 합니다."); }
       if (u.protocol !== "https:" || /\s/.test(String(webhookUrl)) || String(webhookUrl).length > 500) throw new CariPayError("webhookUrl은 500자 이하의 https:// 주소여야 합니다.");
+    }
+    if (webhookSecret !== undefined && webhookSecret !== null) {
+      if (!webhookUrl) throw new CariPayError("webhookSecret은 webhookUrl과 함께 써야 합니다.");
+      if (typeof webhookSecret !== "string" || !WEBHOOK_SECRET_RE.test(webhookSecret)) throw new CariPayError("webhookSecret은 공백 없는 ASCII 16~128자여야 합니다.");
     }
     if (!Number.isSafeInteger(amount) || amount < 100 || amount > 2147483647) {
       throw new CariPayError("청구 금액은 100~2147483647원 사이의 정수여야 합니다.");
@@ -158,6 +180,7 @@ export class CariPayBilling {
     if (!/^\d{10,11}$/.test(phone)) throw new CariPayError("수신자 전화번호는 숫자 10~11자리여야 합니다.");
     const body = { templateType: "SAME", billTemplateId: null, requestId, amount, sendChannel: channel,
       ...(webhookUrl ? { webhookUrl: String(webhookUrl) } : {}),
+      ...(webhookSecret ? { webhookSecret } : {}),
       reason: text(reason, 60, "청구 사유"), description: text(message, 200, "안내문", true),
       members: [{ studentName: name, studentPhone: phone, guardianPhone: null, studentBirthDate: null, classroomId: null }],
       items: null, relatedSubject: null, etc: null };
