@@ -158,12 +158,16 @@ class CariPayBilling:
         return data.get("result_data")
 
     def send_invoice(self, *, request_id: str, amount: int, recipient: dict, reason: str, message: str = "",
-                     channel: str = "ALIMTALK"):
+                     channel: str = "ALIMTALK", webhook_url: Optional[str] = None):
         """성공은 접수만 의미. 주문별 request_id를 저장하고 같은 요청 재시도 시 재사용하세요."""
         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", request_id):
             raise CariPayError("request_id는 영숫자/_/- 8~64자여야 합니다.")
         if channel not in SEND_CHANNELS:
             raise CariPayError(f"channel은 {' | '.join(SEND_CHANNELS)} 중 하나여야 합니다: {channel}")
+        if webhook_url is not None:
+            parsed = urllib.parse.urlsplit(str(webhook_url))
+            if parsed.scheme != "https" or not parsed.hostname or re.search(r"\s", str(webhook_url)) or len(str(webhook_url)) > 500:
+                raise CariPayError("webhook_url은 500자 이하의 https:// 주소여야 합니다.")
         if type(amount) is not int or not 100 <= amount <= 2147483647:
             raise CariPayError("청구 금액은 100~2147483647원 사이의 정수여야 합니다.")
 
@@ -179,14 +183,17 @@ class CariPayBilling:
         phone = re.sub(r"[ -]", "", phone) if isinstance(phone, str) else ""
         if not re.fullmatch(r"[0-9]{10,11}", phone):
             raise CariPayError("수신자 전화번호는 숫자 10~11자리여야 합니다.")
-        self._call("/app/v1/sales/bill", {
+        body = {
             "templateType": "SAME", "billTemplateId": None, "requestId": request_id, "amount": amount,
             "sendChannel": channel,
             "reason": text(reason, 60, "청구 사유"), "description": text(message, 200, "안내문", True),
             "members": [{"studentName": name, "studentPhone": phone, "guardianPhone": None,
                          "studentBirthDate": None, "classroomId": None}],
             "items": None, "relatedSubject": None, "etc": None,
-        })
+        }
+        if webhook_url:
+            body["webhookUrl"] = str(webhook_url)
+        self._call("/app/v1/sales/bill", body)
         return {"accepted": True, "request_id": request_id}
 
     def list_invoices(self, *, page: int = 1, size: int = 10, month: Optional[str] = None):

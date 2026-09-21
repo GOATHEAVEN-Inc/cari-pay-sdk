@@ -15,7 +15,7 @@ cari-pay-sdk/
 
 > 전체 가이드·API 레퍼런스는 개발자 문서 사이트에 있습니다: **https://caripay.co.kr/docs**
 
-## 카리 플친으로 청구서 보내기 (v1.2)
+## 카리 플친으로 청구서 보내기 (v1.3)
 
 온라인 주문, 예약금, 방문 서비스, 매장 외상 등 **아직 납부하지 않은 금액**을 안내할 때 사용합니다.
 상품별 알리고 템플릿 등록 없이, 카리(CARI) 채널의 승인된 범용 청구서 `UK_8980`에 고객명·청구 사유·금액을 넣습니다.
@@ -59,6 +59,7 @@ const result = await billing.sendInvoice({
   reason: "방문 수리비",
   message: "청구 내역을 확인해 주세요.",
   channel: "ALIMTALK_THEN_SMS",     // ALIMTALK | SMS | ALIMTALK_THEN_SMS
+  webhookUrl: "https://api.example.com/caripay/invoice-hook", // 선택: 결제 완료·취소 알림(POST). 수신 후 getInvoice 로 확인
 });
 // { accepted: true, requestId: "order_20260908_001" } = 접수. 도착/결제 완료 아님.
 const list = await billing.listInvoices({ month: "2026-09", page: 1, size: 10 });
@@ -77,6 +78,7 @@ result = billing.send_invoice(
     reason="예약금",
     message="예약 내용을 확인해 주세요.",
     channel="ALIMTALK_THEN_SMS",   # ALIMTALK | SMS | ALIMTALK_THEN_SMS
+    webhook_url="https://api.example.com/caripay/invoice-hook",  # 선택: 결제 완료·취소 알림(POST)
 )
 ```
 

@@ -71,6 +71,12 @@ billing._opener = Opener()
 billing.send_invoice(**{**invoice, "channel": "SMS"})
 assert json.loads(billing._opener.calls[-1].data)["sendChannel"] == "SMS"
 fails(lambda: billing.send_invoice(**{**invoice, "channel": "EMAIL"}))
+billing._opener = Opener()
+billing.send_invoice(**{**invoice, "webhook_url": "https://partner.example/caripay/hook"})
+assert json.loads(billing._opener.calls[-1].data)["webhookUrl"] == "https://partner.example/caripay/hook"
+billing.send_invoice(**invoice)
+assert "webhookUrl" not in json.loads(billing._opener.calls[-1].data)
+fails(lambda: billing.send_invoice(**{**invoice, "webhook_url": "http://partner.example/hook"}))
 
 
 class RoutingOpener:

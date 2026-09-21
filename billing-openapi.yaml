@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: CARI PAY 청구서 발송 API
-  version: 1.2.0
+  version: 1.3.0
   description: |
     가맹점 인증으로 청구서를 생성하고 카리(CARI) 범용 알림톡을 발송하는 API.
     결제 링크 생성용 API_SIGN과 다른 인증을 사용한다. 업체별 청구 기능 등록이 필요하다.
@@ -178,6 +178,15 @@ components:
           description: |
             발송 수단. ALIMTALK=카카오 알림톡(기본), SMS=문자(LMS)만, ALIMTALK_THEN_SMS=알림톡 실패·수신 불가 시 문자 대체.
             재발송과 예약 발송도 청구서에 저장된 수단을 따른다. 실제 나간 수단은 발송 이력의 sendChannel 로 확인한다.
+        webhookUrl:
+          type: string
+          format: uri
+          maxLength: 500
+          nullable: true
+          description: |
+            결제 완료·취소 시 POST 받을 파트너 웹훅 주소(https 만). 본문: event(bill.paid|bill.canceled), billId, requestId, transSeqNo,
+            status, amount, reason, paidAt, canceledAt, occurredAt. 헤더 X-CariPay-Event / X-CariPay-Delivery.
+            2xx 가 아니면 1분·5분·30분·2시간 뒤 재시도 후 포기(총 5회). 본문에 서명이 없으므로 수신 후 getInvoice 로 상태를 확인한다.
         billTemplateId: { type: string, nullable: true, description: '단순 청구는 null. 알리고 템플릿 코드가 아님.' }
         items: { type: array, nullable: true, items: { type: object }, description: '단순 금액 청구는 null' }
         relatedSubject: { type: string, nullable: true }
