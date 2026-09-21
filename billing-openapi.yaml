@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: CARI PAY 청구서 발송 API
-  version: 1.1.0
+  version: 1.2.0
   description: |
     가맹점 인증으로 청구서를 생성하고 카리(CARI) 범용 알림톡을 발송하는 API.
     결제 링크 생성용 API_SIGN과 다른 인증을 사용한다. 업체별 청구 기능 등록이 필요하다.
@@ -9,13 +9,53 @@ info:
     발송 접수 성공은 고객 도착 또는 결제 완료가 아니다. 과거 실패 건을 자동 재발송하지 않는다.
     개발 서버도 모의 발송을 보장하지 않는다. 실제 고객 번호로 테스트하지 않는다.
 servers:
-  - url: https://api.dev.chewing.io
-    description: 개발 (별도 가맹점 토큰 필요, 실제 발송·비용 발생 가능)
-  - url: https://api.caripay.co.kr
-    description: 운영 (실제 발송 및 비용 발생)
+  - url: https://api.dev.caripay.co.kr
+    description: 카리페이 청구 서버 — 현재 단일 환경. 실제 결제 링크 생성·알림톡/문자 발송·포인트 차감이 일어난다.
 security:
   - MerchantAccessToken: []
 paths:
+  /app/v1/auth/login:
+    post:
+      operationId: login
+      security: []
+      summary: 가맹점 계정 로그인 → 접근 토큰(1시간)·리프레시 토큰(30일)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, loginType]
+              properties:
+                email: { type: string }
+                password: { type: string }
+                loginType: { type: string, enum: [EMAIL] }
+      responses:
+        '200':
+          description: result_data.accessToken / refreshToken / accessTokenExpiresIn(초)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Result' }
+  /app/v1/auth/refresh:
+    post:
+      operationId: refreshToken
+      security: []
+      summary: 토큰 갱신. 접근 토큰 만료(result_code -2) 시 호출
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: 새 accessToken / refreshToken
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Result' }
   /app/v1/sales/bill:
     post:
       operationId: sendInvoice
@@ -62,6 +102,43 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Result' }
+  /app/v1/sales/bill/resend:
+    post:
+      operationId: resendInvoice
+      summary: 재발송 — 같은 거래번호·같은 링크·청구서에 저장된 발송 수단. 건당 포인트 차감
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [billIds]
+              properties:
+                billIds: { type: array, items: { type: string }, description: 청구서 uniqueId 목록 }
+      responses:
+        '200':
+          description: result_data 에 청구서 요약 목록
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Result' }
+  /app/v1/sales/public/bill/{transSeqNo}:
+    get:
+      operationId: getPublicInvoice
+      security: []
+      summary: 공개 청구서 조회(인증 없음). caripay.co.kr/pay/{거래번호} 가 사용. 연락처는 마스킹
+      parameters:
+        - in: path
+          name: transSeqNo
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: transSeqNo, status, paymentUrl, corpName, businessName, receiverName, receiverPhoneMasked, reason, description, amount, issuedAt, paidAt, canceledAt, items[]
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Result' }
+        '404':
+          description: 청구서 없음
   /app/v1/sales/bill/{id}:
     get:
       operationId: getInvoice
@@ -94,6 +171,13 @@ components:
         reason: { type: string, minLength: 1, maxLength: 60 }
         description: { type: string, maxLength: 200, nullable: true }
         amount: { type: integer, minimum: 100, maximum: 2147483647 }
+        sendChannel:
+          type: string
+          enum: [ALIMTALK, SMS, ALIMTALK_THEN_SMS]
+          default: ALIMTALK
+          description: |
+            발송 수단. ALIMTALK=카카오 알림톡(기본), SMS=문자(LMS)만, ALIMTALK_THEN_SMS=알림톡 실패·수신 불가 시 문자 대체.
+            재발송과 예약 발송도 청구서에 저장된 수단을 따른다. 실제 나간 수단은 발송 이력의 sendChannel 로 확인한다.
         billTemplateId: { type: string, nullable: true, description: '단순 청구는 null. 알리고 템플릿 코드가 아님.' }
         items: { type: array, nullable: true, items: { type: object }, description: '단순 금액 청구는 null' }
         relatedSubject: { type: string, nullable: true }

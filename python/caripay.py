@@ -35,7 +35,25 @@ APPROVED = "APPROVE_COMPLETE"
 _CANCELED = {"CANCEL_COMPLETE", "STORE_DELETE"}
 _KST = timezone(timedelta(hours=9))
 
-BILLING_BASE_URLS = {"test": "https://api.dev.chewing.io", "live": "https://api.caripay.co.kr"}
+# 청구 API는 현재 단일 환경이다(실제 발송·과금). test/live 모두 같은 주소를 가리킨다.
+BILLING_BASE_URLS = {"test": "https://api.dev.caripay.co.kr", "live": "https://api.dev.caripay.co.kr"}
+# 청구서 발송 수단. ALIMTALK=카카오 알림톡, SMS=문자, ALIMTALK_THEN_SMS=알림톡 실패 시 문자
+SEND_CHANNELS = ("ALIMTALK", "SMS", "ALIMTALK_THEN_SMS")
+_TOKEN_ERROR_CODES = (-1, -2, "-1", "-2")  # 토큰 없음 / 토큰 만료
+
+
+def _billing_base_url(mode: str, base_url: Optional[str]) -> str:
+    value = base_url or BILLING_BASE_URLS.get(mode, "")
+    try:
+        url = urllib.parse.urlsplit(value)
+        local = url.hostname in ("localhost", "127.0.0.1", "::1")
+        valid = url.hostname and (url.scheme == "https" or (local and url.scheme == "http"))
+        valid = valid and not (url.username or url.password or url.query or url.fragment)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise CariPayError("올바른 HTTPS 청구 API 주소가 필요합니다.")
+    return value.rstrip("/")
 
 
 class _NoBillingRedirect(urllib.request.HTTPRedirectHandler):
@@ -47,33 +65,75 @@ class CariPayBilling:
     """가맹점 청구 API: 청구서 생성과 카리 알림톡 발송. 결제 API_KEY가 아닌 가맹점 토큰 사용."""
 
     def __init__(self, *, access_token: str, mode: str = "test", base_url: Optional[str] = None,
-                 timeout: float = 10):
+                 timeout: float = 10, refresh_token: Optional[str] = None,
+                 credentials: Optional[Dict[str, str]] = None):
         if not isinstance(access_token, str) or not access_token or re.search(r"\s", access_token):
             raise CariPayError("가맹점 청구 API access_token이 필요합니다. 결제 API_KEY와 다릅니다.")
-        value = base_url or BILLING_BASE_URLS.get(mode, "")
-        try:
-            url = urllib.parse.urlsplit(value)
-            local = url.hostname in ("localhost", "127.0.0.1", "::1")
-            valid = url.hostname and (url.scheme == "https" or (local and url.scheme == "http"))
-            valid = valid and not (url.username or url.password or url.query or url.fragment)
-        except ValueError:
-            valid = False
-        if not valid:
-            raise CariPayError("올바른 HTTPS 청구 API 주소가 필요합니다.")
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout < float("inf"):
             raise CariPayError("timeout은 양수여야 합니다.")
-        self.base_url = value.rstrip("/")
+        self.base_url = _billing_base_url(mode, base_url)
         self.access_token = access_token
+        # 접근 토큰(1시간) 만료 시 갱신용. login()으로 만들면 credentials 로 재로그인까지 한다.
+        self.refresh_token = refresh_token if isinstance(refresh_token, str) and refresh_token.strip() else None
+        self.credentials = credentials
         self.timeout = timeout
         self._opener = urllib.request.build_opener(_NoBillingRedirect())
 
     @classmethod
     def from_env(cls, env=None):
         env = os.environ if env is None else env
-        return cls(access_token=env.get("CARIPAY_BILLING_ACCESS_TOKEN"),
+        return cls(access_token=env.get("CARIPAY_BILLING_ACCESS_TOKEN"), refresh_token=env.get("CARIPAY_BILLING_REFRESH_TOKEN"),
                    mode=env.get("CARIPAY_MODE", "test"), base_url=env.get("CARIPAY_BILLING_BASE_URL"))
 
-    def _call(self, path, body=None):
+    @classmethod
+    def login(cls, *, email: str, password: str, mode: str = "test", base_url: Optional[str] = None,
+              timeout: float = 10, opener=None):
+        """가맹점 계정으로 로그인해 클라이언트를 만든다. 토큰 만료 시 자동 갱신·재로그인. 연동 전용 계정을 쓰세요."""
+        if not isinstance(email, str) or not email.strip() or not isinstance(password, str) or not password:
+            raise CariPayError("가맹점 계정 email/password 가 필요합니다.")
+        credentials = {"email": email.strip(), "password": password}
+        client = cls(access_token="pending", mode=mode, base_url=base_url, timeout=timeout, credentials=credentials)
+        if opener is not None:
+            client._opener = opener
+        tokens = client._auth("/app/v1/auth/login", {**credentials, "loginType": "EMAIL"})
+        client.access_token, client.refresh_token = tokens
+        return client
+
+    def _auth(self, path: str, body: Dict[str, Any]):
+        request = urllib.request.Request(self.base_url + path, data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                                         headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with self._opener.open(request, timeout=self.timeout) as response:
+                data = json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            raise CariPayError(f"청구 API 로그인 실패 (HTTP {error.code})", code=str(error.code)) from None
+        except (urllib.error.URLError, OSError):
+            raise CariPayError("청구 API 인증 서버에 연결하지 못했습니다.") from None
+        except (ValueError, UnicodeError):
+            raise CariPayError("청구 API 인증 응답 형식 오류") from None
+        result = data.get("result_data") if isinstance(data, dict) else None
+        if not isinstance(data, dict) or data.get("result_code") not in (0, "0") or not isinstance(result, dict) \
+                or not isinstance(result.get("accessToken"), str) or not result["accessToken"]:
+            raise CariPayError("청구 API 로그인 실패", code=str(data.get("result_code")) if isinstance(data, dict) else None)
+        refresh = result.get("refreshToken")
+        return result["accessToken"], (refresh if isinstance(refresh, str) and refresh else None)
+
+    def _renew(self) -> bool:
+        """접근 토큰 갱신 → 실패 시 재로그인. 둘 다 불가능하면 False."""
+        if self.refresh_token:
+            try:
+                self.access_token, refresh = self._auth("/app/v1/auth/refresh", {"refreshToken": self.refresh_token})
+                if refresh:
+                    self.refresh_token = refresh
+                return True
+            except CariPayError:
+                pass  # 리프레시 토큰도 만료 — 아래에서 재로그인
+        if self.credentials:
+            self.access_token, self.refresh_token = self._auth("/app/v1/auth/login", {**self.credentials, "loginType": "EMAIL"})
+            return True
+        return False
+
+    def _call(self, path, body=None, _retried=False):
         request = urllib.request.Request(self.base_url + path,
             data=None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8"),
             headers={"Content-Type": "application/json", "x-access-token": self.access_token},
@@ -90,13 +150,20 @@ class CariPayBilling:
         except (ValueError, UnicodeError):
             raise CariPayError("청구 API 응답 형식 오류") from None
         if not isinstance(data, dict) or type(data.get("result_code")) not in (int, str) or data.get("result_code") not in (0, "0"):
-            raise CariPayError("청구 API 요청 실패", code=str(data.get("result_code")) if isinstance(data, dict) else None)
+            code = data.get("result_code") if isinstance(data, dict) else None
+            # 토큰 없음/만료는 서버가 처리 전에 거절한 것이라 중복 접수 없이 한 번 갱신 후 재시도한다.
+            if not _retried and code in _TOKEN_ERROR_CODES and self._renew():
+                return self._call(path, body, _retried=True)
+            raise CariPayError("청구 API 요청 실패", code=str(code) if code is not None else None)
         return data.get("result_data")
 
-    def send_invoice(self, *, request_id: str, amount: int, recipient: dict, reason: str, message: str = ""):
+    def send_invoice(self, *, request_id: str, amount: int, recipient: dict, reason: str, message: str = "",
+                     channel: str = "ALIMTALK"):
         """성공은 접수만 의미. 주문별 request_id를 저장하고 같은 요청 재시도 시 재사용하세요."""
         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", request_id):
             raise CariPayError("request_id는 영숫자/_/- 8~64자여야 합니다.")
+        if channel not in SEND_CHANNELS:
+            raise CariPayError(f"channel은 {' | '.join(SEND_CHANNELS)} 중 하나여야 합니다: {channel}")
         if type(amount) is not int or not 100 <= amount <= 2147483647:
             raise CariPayError("청구 금액은 100~2147483647원 사이의 정수여야 합니다.")
 
@@ -114,6 +181,7 @@ class CariPayBilling:
             raise CariPayError("수신자 전화번호는 숫자 10~11자리여야 합니다.")
         self._call("/app/v1/sales/bill", {
             "templateType": "SAME", "billTemplateId": None, "requestId": request_id, "amount": amount,
+            "sendChannel": channel,
             "reason": text(reason, 60, "청구 사유"), "description": text(message, 200, "안내문", True),
             "members": [{"studentName": name, "studentPhone": phone, "guardianPhone": None,
                          "studentBirthDate": None, "classroomId": None}],
@@ -201,6 +269,17 @@ def _check_callback_url(confirm_url: Any) -> str:
     return value
 
 
+def _check_return_url(return_url: Any) -> str:
+    value = str(return_url)
+    parsed = urllib.parse.urlparse(value)
+    local = parsed.hostname in ("localhost", "127.0.0.1")
+    if not parsed.hostname or (parsed.scheme != "https" and not (local and parsed.scheme == "http")):
+        raise CariPayError("return_url은 HTTPS여야 합니다.")
+    if len(value) > 100:
+        raise CariPayError("return_url은 100자 이하여야 합니다. 주문 식별은 temp_value를 쓰세요.")
+    return value
+
+
 def _number_or_none(value: Any) -> Optional[int]:
     if value is None or value == "":
         return None
@@ -282,10 +361,15 @@ class CariPay:
                        reason: str, confirm_url: str,
                        trans_seqno: Optional[str] = None, info_message: str = "",
                        order_type: str = "BILL",
-                       items: Optional[Sequence[Dict[str, Any]]] = None) -> Dict[str, Any]:
+                       items: Optional[Sequence[Dict[str, Any]]] = None,
+                       return_url: Optional[str] = None, temp_value: Any = None,
+                       user_id: Any = None) -> Dict[str, Any]:
         """결제 생성 → 고객에게 보낼 결제 페이지 링크 발급.
 
         금액은 반드시 서버 카탈로그 기준으로 결정해 넘길 것.
+        return_url: 결제 완료 후 결제 페이지가 고객 브라우저를 돌려보낼 곳(HTTPS, 100자 이하).
+                    승인 판정은 여기가 아니라 조회 API로 한다.
+        temp_value: 콜백·리턴에 그대로 돌아오는 임의값(주문 ID 등).
         """
         seqno = _check_seqno(trans_seqno or new_trans_seqno())
         if order_type not in ("BILL", "SHOP"):
@@ -300,6 +384,13 @@ class CariPay:
             "CONFIRM_URL": _check_callback_url(confirm_url),
             "orderType": order_type,
         }
+        if return_url:
+            extra["RETURN_DISPLAY_YN"] = "Y"
+            extra["RETURN_URL"] = _check_return_url(return_url)
+        if temp_value is not None:
+            extra["TEMP_VALUE"] = str(temp_value)
+        if user_id is not None:
+            extra["USER_ID"] = str(user_id)
         if items:
             extra["ITEMS"] = list(items)
 
@@ -329,7 +420,11 @@ class CariPay:
 
     def cancel_payment(self, trans_seqno: str, amount: Any = None,
                        mobile_no: Optional[str] = None) -> Dict[str, Any]:
-        """결제 취소(환불). amount 미지정 시 승인금액 전액."""
+        """결제 취소(환불). 게이트웨이는 승인금액 **전액 취소만** 받는다.
+
+        amount 를 넘기면 승인금액과 같아야 하고, 생략하면 조회로 승인금액을 채운다.
+        부분 환불은 전액 취소 후 새 결제로 처리한다.
+        """
         seqno = _check_seqno(trans_seqno)
         if amount is None or mobile_no is None:
             found = self.get_payment(seqno)

@@ -8,36 +8,107 @@ export const BASE_URLS = {
 };
 
 export const BILLING_BASE_URLS = {
-  test: "https://api.dev.chewing.io",
-  live: "https://api.caripay.co.kr",
+  // 청구 API는 현재 단일 환경이다(실제 발송·과금). test/live 모두 같은 주소를 가리킨다.
+  test: "https://api.dev.caripay.co.kr",
+  live: "https://api.dev.caripay.co.kr",
 };
+
+/** 청구서 발송 수단. ALIMTALK=카카오 알림톡, SMS=문자, ALIMTALK_THEN_SMS=알림톡 실패 시 문자 */
+export const SEND_CHANNELS = ["ALIMTALK", "SMS", "ALIMTALK_THEN_SMS"];
+const TOKEN_ERROR_CODES = new Set([-1, -2, "-1", "-2"]); // 토큰 없음 / 토큰 만료
+
+function billingBaseUrl(mode, baseUrl) {
+  let url;
+  try { url = new URL(baseUrl || BILLING_BASE_URLS[mode]); } catch {
+    throw new CariPayError("올바른 청구 API mode 또는 baseUrl이 필요합니다.");
+  }
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if ((url.protocol !== "https:" && !(local && url.protocol === "http:"))
+    || url.username || url.password || url.search || url.hash) throw new CariPayError("청구 API는 HTTPS를 사용해야 합니다.");
+  return url.href.replace(/\/+$/, "");
+}
+
+async function billingAuth({ baseUrl, timeoutMs, fetch: f }, path, body) {
+  let res;
+  try {
+    res = await f(baseUrl + path, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      redirect: "error", signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    throw new CariPayError("청구 API 인증 서버에 연결하지 못했습니다.");
+  }
+  let json;
+  try { json = await res.json(); } catch { throw new CariPayError(`청구 API 인증 응답 형식 오류 (HTTP ${res.status})`); }
+  const d = json?.result_data;
+  if (!res.ok || ![0, "0"].includes(json?.result_code) || typeof d?.accessToken !== "string" || !d.accessToken) {
+    throw new CariPayError(`청구 API 로그인 실패 (HTTP ${res.status})`, { code: json?.result_code });
+  }
+  return { accessToken: d.accessToken, refreshToken: typeof d.refreshToken === "string" ? d.refreshToken : undefined };
+}
 
 /** 청구서 생성 + 카리 알림톡 발송. 결제 링크 생성 API와 별개의 가맹점 인증을 사용한다. */
 export class CariPayBilling {
-  constructor({ accessToken, mode = "test", baseUrl, timeoutMs = 10_000, fetch: f } = {}) {
+  /**
+   * @param {object} o
+   * @param {string} o.accessToken    가맹점 접근 토큰 (x-access-token). 결제 서명 API_KEY와 다르다
+   * @param {string} [o.refreshToken] 있으면 접근 토큰 만료 시 자동 갱신
+   * @param {{email:string,password:string}} [o.credentials] login()으로 만들었을 때만. 갱신 실패 시 재로그인
+   */
+  constructor({ accessToken, refreshToken, credentials, mode = "test", baseUrl, timeoutMs = 10_000, fetch: f } = {}) {
     if (typeof accessToken !== "string" || !accessToken.trim() || /\s/.test(accessToken)) {
       throw new CariPayError("가맹점 청구 API accessToken이 필요합니다. 결제 서명 API_KEY와 다릅니다.");
     }
-    let url;
-    try { url = new URL(baseUrl || BILLING_BASE_URLS[mode]); } catch {
-      throw new CariPayError("올바른 청구 API mode 또는 baseUrl이 필요합니다.");
-    }
-    const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-    if ((url.protocol !== "https:" && !(local && url.protocol === "http:"))
-      || url.username || url.password || url.search || url.hash) throw new CariPayError("청구 API는 HTTPS를 사용해야 합니다.");
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new CariPayError("timeoutMs는 양수여야 합니다.");
-    this.baseUrl = url.href.replace(/\/+$/, "");
+    this.baseUrl = billingBaseUrl(mode, baseUrl);
     this.accessToken = accessToken;
+    this.refreshToken = typeof refreshToken === "string" && refreshToken.trim() ? refreshToken : undefined;
+    this.credentials = credentials;
     this.timeoutMs = timeoutMs;
     this.fetch = f || globalThis.fetch;
   }
 
   static fromEnv(env = process.env) {
-    return new CariPayBilling({ accessToken: env.CARIPAY_BILLING_ACCESS_TOKEN,
+    return new CariPayBilling({ accessToken: env.CARIPAY_BILLING_ACCESS_TOKEN, refreshToken: env.CARIPAY_BILLING_REFRESH_TOKEN,
       mode: env.CARIPAY_MODE || "test", baseUrl: env.CARIPAY_BILLING_BASE_URL });
   }
 
-  async #call(path, body) {
+  /**
+   * 가맹점 계정(이메일·비밀번호)으로 로그인해 클라이언트를 만든다. 접근 토큰은 1시간, 리프레시 토큰은 30일이며
+   * 만료되면 자동으로 갱신하고, 갱신도 실패하면 같은 계정으로 다시 로그인한다.
+   * 비밀번호는 서버 시크릿에만 두고, 연동 전용 계정을 쓴다.
+   */
+  static async login({ email, password, mode = "test", baseUrl, timeoutMs = 10_000, fetch: f } = {}) {
+    if (typeof email !== "string" || !email.trim() || typeof password !== "string" || !password) {
+      throw new CariPayError("가맹점 계정 email/password 가 필요합니다.");
+    }
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new CariPayError("timeoutMs는 양수여야 합니다.");
+    const credentials = { email: email.trim(), password };
+    const ctx = { baseUrl: billingBaseUrl(mode, baseUrl), timeoutMs, fetch: f || globalThis.fetch };
+    const tokens = await billingAuth(ctx, "/app/v1/auth/login", { ...credentials, loginType: "EMAIL" });
+    return new CariPayBilling({ ...tokens, credentials, mode, baseUrl, timeoutMs, fetch: f });
+  }
+
+  /** 접근 토큰 갱신 → 실패 시 재로그인. 둘 다 불가능하면 false */
+  async #renew() {
+    if (this.refreshToken) {
+      try {
+        const t = await billingAuth(this, "/app/v1/auth/refresh", { refreshToken: this.refreshToken });
+        this.accessToken = t.accessToken;
+        if (t.refreshToken) this.refreshToken = t.refreshToken;
+        return true;
+      } catch { /* 리프레시 토큰도 만료 — 아래에서 재로그인 */ }
+    }
+    if (this.credentials) {
+      const t = await billingAuth(this, "/app/v1/auth/login", { ...this.credentials, loginType: "EMAIL" });
+      this.accessToken = t.accessToken;
+      this.refreshToken = t.refreshToken;
+      return true;
+    }
+    return false;
+  }
+
+  async #call(path, body, retried = false) {
     let res;
     try {
       res = await this.fetch(this.baseUrl + path, {
@@ -53,6 +124,8 @@ export class CariPayBilling {
     let json;
     try { json = await res.json(); } catch { throw new CariPayError(`청구 API 응답 형식 오류 (HTTP ${res.status})`); }
     if (!res.ok || ![0, "0"].includes(json?.result_code)) {
+      // 토큰 없음/만료는 서버가 요청을 처리하기 전에 거절한 것이라 중복 접수 위험 없이 한 번 갱신 후 재시도한다.
+      if (!retried && TOKEN_ERROR_CODES.has(json?.result_code) && (await this.#renew())) return this.#call(path, body, true);
       // Server error text can contain customer data. Return only the machine code/status.
       throw new CariPayError(`청구 API 요청 실패 (HTTP ${res.status})`, { code: json?.result_code });
     }
@@ -60,10 +133,11 @@ export class CariPayBilling {
   }
 
   /** 성공은 발송 접수이며 고객 도착/결제 완료가 아니다. requestId는 주문별로 저장해서 재사용한다. */
-  async sendInvoice({ requestId, amount, recipient, reason, message = "" } = {}) {
+  async sendInvoice({ requestId, amount, recipient, reason, message = "", channel = "ALIMTALK" } = {}) {
     if (typeof requestId !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(requestId)) {
       throw new CariPayError("requestId는 영숫자/_/- 8~64자여야 합니다.");
     }
+    if (!SEND_CHANNELS.includes(channel)) throw new CariPayError(`channel은 ${SEND_CHANNELS.join(" | ")} 중 하나여야 합니다: ${channel}`);
     if (!Number.isSafeInteger(amount) || amount < 100 || amount > 2147483647) {
       throw new CariPayError("청구 금액은 100~2147483647원 사이의 정수여야 합니다.");
     }
@@ -76,7 +150,7 @@ export class CariPayBilling {
     const name = text(recipient?.name, 30, "수신자 이름");
     const phone = typeof recipient?.phone === "string" ? recipient.phone.replace(/[ -]/g, "") : "";
     if (!/^\d{10,11}$/.test(phone)) throw new CariPayError("수신자 전화번호는 숫자 10~11자리여야 합니다.");
-    const body = { templateType: "SAME", billTemplateId: null, requestId, amount,
+    const body = { templateType: "SAME", billTemplateId: null, requestId, amount, sendChannel: channel,
       reason: text(reason, 60, "청구 사유"), description: text(message, 200, "안내문", true),
       members: [{ studentName: name, studentPhone: phone, guardianPhone: null, studentBirthDate: null, classroomId: null }],
       items: null, relatedSubject: null, etc: null };
@@ -188,6 +262,16 @@ function checkCallbackUrl(confirmUrl) {
   return value;
 }
 
+function checkReturnUrl(returnUrl) {
+  const value = String(returnUrl);
+  let url;
+  try { url = new URL(value); } catch { throw new CariPayError("returnUrl은 유효한 URL이어야 합니다."); }
+  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !(local && url.protocol === "http:")) throw new CariPayError("returnUrl은 HTTPS여야 합니다.");
+  if (value.length > 100) throw new CariPayError("returnUrl은 100자 이하여야 합니다. 주문 식별은 tempValue를 쓰세요.");
+  return value;
+}
+
 function numberOrNull(value) {
   if (value === undefined || value === null || value === "") return null;
   const numeric = Number(value);
@@ -293,6 +377,9 @@ export class CariPay {
     infoMessage = "",
     orderType = "BILL",
     items,
+    returnUrl,
+    tempValue,
+    userId,
   } = {}) {
     const seq = checkTransSeqno(transSeqno);
     if (orderType !== "BILL" && orderType !== "SHOP") {
@@ -306,6 +393,11 @@ export class CariPay {
       INFO_MESSAGE: infoMessage,
       CONFIRM_URL: checkCallbackUrl(confirmUrl),
       orderType,
+      // 결제 완료 후 결제 페이지가 고객 브라우저를 돌려보낼 곳(≤100자). 승인 판정은 여기가 아니라 조회 API로 한다.
+      ...(returnUrl ? { RETURN_DISPLAY_YN: "Y", RETURN_URL: checkReturnUrl(returnUrl) } : {}),
+      // 콜백·리턴에 그대로 돌아오는 임의값(주문 ID 등)
+      ...(tempValue !== undefined && tempValue !== null ? { TEMP_VALUE: String(tempValue) } : {}),
+      ...(userId !== undefined && userId !== null ? { USER_ID: String(userId) } : {}),
       ...(items ? { ITEMS: items } : {}),
     });
     if (!d.REDIRECT_URL) {
@@ -333,7 +425,10 @@ export class CariPay {
     };
   }
 
-  /** 결제 취소(환불). amount 미지정 시 승인금액 전액 */
+  /**
+   * 결제 취소(환불). 게이트웨이는 **승인금액 전액 취소만** 받는다 — amount 를 넘기면 승인금액과 같아야 하고,
+   * 생략하면 조회로 승인금액을 채운다. 부분 환불은 전액 취소 후 새 결제로 처리한다.
+   */
   async cancelPayment({ transSeqno, amount, mobileNo }) {
     const seq = checkTransSeqno(transSeqno);
     let amt = amount;

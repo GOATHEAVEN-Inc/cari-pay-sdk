@@ -1,11 +1,17 @@
 {
   "name": "@caripay/sdk",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "CARI PAY 결제 게이트웨이 공식 Node.js SDK와 OpenAPI 규격",
   "type": "module",
   "main": "node/index.js",
   "types": "node/index.d.ts",
-  "files": ["node/index.js", "node/index.d.ts", "node/README.md", "openapi.yaml", "billing-openapi.yaml"],
+  "files": [
+    "node/index.js",
+    "node/index.d.ts",
+    "node/README.md",
+    "openapi.yaml",
+    "billing-openapi.yaml"
+  ],
   "exports": {
     ".": {
       "types": "./node/index.d.ts",
@@ -14,10 +20,18 @@
     "./openapi.yaml": "./openapi.yaml",
     "./billing-openapi.yaml": "./billing-openapi.yaml"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "test": "node node/test.mjs && node node/billing.test.mjs && python3 python/test_caripay.py && python3 python/test_billing.py"
   },
-  "keywords": ["caripay", "payment", "van", "checkout", "결제"],
+  "keywords": [
+    "caripay",
+    "payment",
+    "van",
+    "checkout",
+    "결제"
+  ],
   "license": "UNLICENSED"
 }
