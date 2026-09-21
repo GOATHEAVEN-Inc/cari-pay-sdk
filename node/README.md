@@ -2,6 +2,8 @@
 
 CARI PAY 결제 게이트웨이 Node.js SDK. **의존성 0개**, Node 18+, TypeScript 타입 포함.
 
+> 전체 가이드·API 레퍼런스: https://caripay.co.kr/docs · 청구서(알림톡/문자) 발송은 `CariPayBilling.login()` + `sendInvoice({ channel })` — 루트 README 참고.
+
 ```bash
 npm install github:GOATHEAVEN-Inc/cari-pay-sdk
 ```
@@ -22,7 +24,7 @@ const { transSeqno, redirectUrl } = await pay.createPayment({
 const p = await pay.confirmCallback(transSeqno);   // 콜백/폴링 모두 이걸로 이중확인
 if (p.paid) { /* 서비스 제공 — 멱등하게 1회만 */ }
 
-await pay.cancelPayment({ transSeqno });           // 금액 생략 시 전액 취소
+await pay.cancelPayment({ transSeqno });           // 승인금액 전액 취소만 가능(부분 취소 불가)
 ```
 
 | 메서드 | 설명 |

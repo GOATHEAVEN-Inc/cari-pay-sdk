@@ -1,5 +1,8 @@
 export declare const BASE_URLS: { test: string; live: string };
 export declare const BILLING_BASE_URLS: { test: string; live: string };
+/** 청구서 발송 수단. ALIMTALK=카카오 알림톡, SMS=문자, ALIMTALK_THEN_SMS=알림톡 실패 시 문자 */
+export declare const SEND_CHANNELS: readonly ["ALIMTALK", "SMS", "ALIMTALK_THEN_SMS"];
+export type SendChannel = (typeof SEND_CHANNELS)[number];
 export interface SendInvoiceInput {
   /** 주문별로 저장. 응답이 유실되어도 같은 내용에는 같은 ID를 사용. */
   requestId: string;
@@ -7,10 +10,23 @@ export interface SendInvoiceInput {
   recipient: { name: string; phone: string };
   reason: string;
   message?: string;
+  /** 기본 ALIMTALK */
+  channel?: SendChannel;
 }
 export declare class CariPayBilling {
-  constructor(o: { accessToken: string; mode?: "test" | "live"; baseUrl?: string; timeoutMs?: number; fetch?: typeof fetch });
+  constructor(o: {
+    accessToken: string;
+    /** 있으면 접근 토큰 만료 시 자동 갱신 */
+    refreshToken?: string;
+    /** login()이 채움. 갱신 실패 시 재로그인에 사용 */
+    credentials?: { email: string; password: string };
+    mode?: "test" | "live"; baseUrl?: string; timeoutMs?: number; fetch?: typeof fetch;
+  });
   static fromEnv(env?: Record<string, string | undefined>): CariPayBilling;
+  /** 가맹점 계정으로 로그인. 접근 토큰(1시간) 만료 시 자동 갱신·재로그인. */
+  static login(o: { email: string; password: string; mode?: "test" | "live"; baseUrl?: string; timeoutMs?: number; fetch?: typeof fetch }): Promise<CariPayBilling>;
+  accessToken: string;
+  refreshToken?: string;
   /** 접수 결과. 고객 도착 또는 결제 성공을 의미하지 않습니다. */
   sendInvoice(input: SendInvoiceInput): Promise<{ accepted: true; requestId: string }>;
   listInvoices(options?: { page?: number; size?: number; month?: string }): Promise<Record<string, unknown>>;
@@ -55,6 +71,11 @@ export interface CreatePaymentInput {
   infoMessage?: string;
   orderType?: "BILL" | "SHOP";
   items?: PaymentItem[];
+  /** 결제 완료 후 고객 브라우저를 돌려보낼 곳(HTTPS, ≤100자). 승인 판정은 조회 API로. */
+  returnUrl?: string;
+  /** 콜백·리턴에 그대로 돌아오는 임의값(주문 ID 등) */
+  tempValue?: string | number;
+  userId?: string | number;
 }
 
 export interface Payment {
@@ -85,6 +106,7 @@ export declare class CariPay {
   static fromEnv(env?: Record<string, string | undefined>): CariPay;
   createPayment(input: CreatePaymentInput): Promise<{ transSeqno: string; redirectUrl: string; raw: Record<string, unknown> }>;
   getPayment(transSeqno: string): Promise<Payment>;
+  /** 승인금액 전액 취소만 가능. amount 를 넘기면 승인금액과 같아야 한다. */
   cancelPayment(o: { transSeqno: string; amount?: number | string; mobileNo?: string }): Promise<{ transSeqno: string; canceledAmount: number | null; raw: Record<string, unknown> }>;
   deleteBill(o: { transSeqno: string; amount: number | string; mobileNo: string }): Promise<{ transSeqno: string; raw: Record<string, unknown> }>;
   confirmCallback(input: string | { TRANS_SEQNO?: string; transSeqno?: string }): Promise<Payment>;

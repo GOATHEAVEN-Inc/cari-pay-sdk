@@ -48,6 +48,20 @@ assert body["MOBILE_NO"] == "01012345678"       # 하이픈 제거
 assert body["orderType"] == "BILL"
 assert len(body["TRANS_AT"]) == 14
 assert body["API_SIGN"] == sign("svc001", "PC0001", "SD0001", body["TRANS_AT"], KEY)
+assert "RETURN_URL" not in body and "TEMP_VALUE" not in body
+
+# 3-1. 결제 후 복귀 주소·임의값: 주면 실리고, HTTP·100자 초과는 호출 전에 거절
+pay.create_payment(trans_seqno="svc002", amount=12000, mobile_no="01012345678", payer_name="홍",
+                   reason="r", confirm_url="https://me/cb", return_url="https://me/done", temp_value=8812)
+body = sent[-1]["body"]
+assert body["RETURN_DISPLAY_YN"] == "Y" and body["RETURN_URL"] == "https://me/done" and body["TEMP_VALUE"] == "8812"
+for bad in ("http://example.com/done", "https://example.com/" + "x" * 100):
+    try:
+        pay.create_payment(trans_seqno="svc003", amount=12000, mobile_no="01012345678", payer_name="홍",
+                           reason="r", confirm_url="https://me/cb", return_url=bad)
+        raise AssertionError("return_url 검증 실패")
+    except CariPayError:
+        pass
 
 # 4. 입력 검증 — 잘못된 값은 호출 전에 막는다
 pay = CariPay(**CFG)

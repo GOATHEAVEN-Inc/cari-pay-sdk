@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: CARI PAY Gateway API
-  version: "1.0.1"
+  version: "1.2.0"
   description: |
     CARI PAY 결제 게이트웨이. 결제 생성 / 조회 / 취소 3개 엔드포인트 + 파트너 콜백 1개로 연동이 끝납니다.
 
@@ -98,7 +98,8 @@ paths:
       summary: 결제 취소 / 청구서 삭제
       description: |
         `REQUEST_TYPE=CANCEL` 은 승인된 결제의 취소(환불), `DELETE` 는 미결제 청구서 삭제입니다.
-        `APPROVAL_AMOUNT`에 취소 금액을 지정합니다(부분 취소 가능).
+        `CANCEL` 은 **승인금액 전액만** 취소됩니다 — `APPROVAL_AMOUNT` 가 승인금액과 다르면 거절됩니다(부분 취소 불가).
+        이미 취소된 거래에 다시 요청하면 0000 으로 응답합니다(멱등). 단말·키오스크 승인 건은 4008 로 거절됩니다.
       requestBody:
         required: true
         content:
@@ -129,13 +130,27 @@ paths:
           application/json:
             schema:
               type: object
-              description: 거래정보·주문유형이 담깁니다. 필드 구성은 변경될 수 있으므로 TRANS_SEQNO만 사용하세요.
+              description: 거래정보·주문유형이 담깁니다. 필드 구성은 늘어날 수 있으므로 TRANS_SEQNO 만 키로 사용하고 나머지는 참고용으로만 쓰세요.
               properties:
+                RESULT_CODE: { type: string, example: "0000" }
+                RESULT_MSG: { type: string }
                 TRANS_SEQNO:
                   type: string
+                MOBILE_NO: { type: string }
+                APPROVAL_AMOUNT: { type: string, description: 승인금액(문자열). 확정은 searchPayment 로 }
+                TEMP_VALUE: { type: string, description: 결제 생성 때의 TEMP_VALUE }
+                ORDER_TYPE: { type: string, enum: [BILL, SHOP] }
+                txId: { type: string, description: 게이트웨이 내부 거래 ID (플랫폼ID_가맹점ID_TRANS_SEQNO) }
+                cardCompany: { type: string }
+                installment: { type: string, description: 할부개월. 0/00/null 일시불 }
+                approvalNumber: { type: string }
+                approvalDatetime: { type: string, example: "20260921120135" }
+                payerName: { type: string }
       responses:
         '200':
-          description: 파트너 수신 확인. 재전송 조건과 횟수는 개통 시 제공되는 운영 규격을 따릅니다.
+          description: |
+            파트너 수신 확인(2xx). 콜백은 승인 직후 큐에 적재돼 5초 간격으로 **1회 전송**되며, 2xx 가 아니거나 연결에 실패하면
+            실패로 기록되고 자동 재전송되지 않습니다. 콜백 유실에 대비해 searchPayment 폴링을 반드시 병행하세요.
 
 components:
   schemas:
@@ -192,7 +207,23 @@ components:
             CONFIRM_URL:
               type: string
               format: uri
-              description: 결제 완료 시 호출될 파트너 백엔드 콜백 URL
+              description: 결제 완료 시 호출될 파트너 백엔드 콜백 URL. **https:// 만 허용** — http 콜백은 전송되지 않습니다.
+            RETURN_DISPLAY_YN:
+              type: string
+              enum: [Y, N]
+              description: Y 이면 결제 완료 후 결제 페이지가 고객 브라우저를 RETURN_URL 로 이동시킵니다.
+            RETURN_URL:
+              type: string
+              maxLength: 100
+              description: |
+                결제 후 복귀 주소(HTTPS). `?RESULT_CODE=&RESULT_MSG=&TRANS_SEQNO=&MOBILE_NO=&APPROVAL_AMOUNT=&TEMP_VALUE=` 가 붙습니다.
+                승인 판정은 여기가 아니라 searchPayment 로 합니다.
+            TEMP_VALUE:
+              type: string
+              description: 파트너 임의값(주문 ID 등). 콜백·RETURN_URL 에 그대로 돌아옵니다.
+            USER_ID:
+              type: string
+              description: 파트너 회원 식별자(참고용)
             orderType:
               type: string
               enum: [BILL, SHOP]

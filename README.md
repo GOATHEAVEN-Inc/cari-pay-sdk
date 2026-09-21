@@ -13,7 +13,9 @@ cari-pay-sdk/
 
 지원 언어에 없다면 `openapi.yaml`로 클라이언트를 생성하거나(아래 참고), 아래 curl 규격 그대로 직접 호출하면 됩니다.
 
-## 카리 플친으로 청구서 보내기 (v1.1)
+> 전체 가이드·API 레퍼런스는 개발자 문서 사이트에 있습니다: **https://caripay.co.kr/docs**
+
+## 카리 플친으로 청구서 보내기 (v1.2)
 
 온라인 주문, 예약금, 방문 서비스, 매장 외상 등 **아직 납부하지 않은 금액**을 안내할 때 사용합니다.
 상품별 알리고 템플릿 등록 없이, 카리(CARI) 채널의 승인된 범용 청구서 `UK_8980`에 고객명·청구 사유·금액을 넣습니다.
@@ -32,27 +34,31 @@ cari-pay-sdk/
 ### 업체별 준비
 
 1. 카리페이에 가맹점·결제 가맹 코드 등록과 청구 기능 승인을 완료합니다.
-2. 해당 가맹점 계정의 청구 API 토큰을 서버에만 보관합니다. 기존 `API_KEY`를 대신 넣으면 안 됩니다.
-   토큰 발급·갱신은 가맹점 인증 절차를 따르며 이 SDK가 로그인하거나 권한을 자동 발급하지 않습니다.
-3. 발송 비용·잔액 조건과 수신자 연락처를 확인합니다. 다른 업체의 토큰을 공유해서 사용하지 않습니다.
-4. 운영에서는 `CARIPAY_MODE=live`를 명시합니다. 기본값 `test`는 개발 서버 주소를 선택합니다.
+2. 연동 전용 가맹점 계정(이메일·비밀번호)을 만들고 서버 시크릿에만 둡니다. `CariPayBilling.login()`이 로그인하고
+   접근 토큰(1시간)이 만료되면 자동으로 갱신·재로그인합니다. 기존 `API_KEY`를 대신 넣으면 안 됩니다.
+3. 발송 포인트 잔액과 수신자 연락처를 확인합니다. 다른 업체의 토큰을 공유해서 사용하지 않습니다.
+4. 발송 수단을 정합니다 — `ALIMTALK`(카카오 알림톡, 기본) · `SMS`(문자) · `ALIMTALK_THEN_SMS`(알림톡 실패·수신 불가 시 문자).
 
-`test`는 발송을 막는 모의 실행 옵션이 아닙니다. 개발 서버에 발송 기능이 연결되어 있으면 실제 메시지와 비용이 발생할 수 있고,
-템플릿 설정도 운영과 다를 수 있습니다. 발송 없는 검증은 `npm test`의 모의 테스트를 사용하세요.
-실제 호출 검증에는 동의한 테스트 수신자만 사용하고 일반 고객 번호를 넣지 마세요.
+청구 API는 현재 **단일 환경**(`https://api.dev.caripay.co.kr`)입니다. `CARIPAY_MODE`와 관계없이 호출하면 실제 결제 링크가
+만들어지고 실제 알림톡·문자가 나가며 포인트가 차감됩니다. 발송 없는 검증은 `npm test`의 모의 테스트를 사용하고,
+실제 호출 검증에는 동의한 테스트 수신자(본인 번호)만 사용하세요.
 
 ```js
 import { CariPayBilling } from "@caripay/sdk";
 
-// CARIPAY_BILLING_ACCESS_TOKEN: 해당 가맹점의 접근 토큰 (서버 환경변수)
-// CARIPAY_MODE=live: 운영 서버 선택. test도 발송 차단을 보장하지 않음
-const billing = CariPayBilling.fromEnv();
+// 연동 전용 가맹점 계정으로 로그인. 토큰 만료 시 자동 갱신·재로그인.
+// (토큰을 직접 관리하려면 CARIPAY_BILLING_ACCESS_TOKEN 을 두고 CariPayBilling.fromEnv())
+const billing = await CariPayBilling.login({
+  email: process.env.CARIPAY_BILLING_EMAIL,
+  password: process.env.CARIPAY_BILLING_PASSWORD,
+});
 const result = await billing.sendInvoice({
   requestId: "order_20260908_001", // 주문 DB에 저장. 같은 요청 재시도는 같은 ID 사용
   amount: 128000,
   recipient: { name: "고객명", phone: process.env.CUSTOMER_PHONE },
   reason: "방문 수리비",
   message: "청구 내역을 확인해 주세요.",
+  channel: "ALIMTALK_THEN_SMS",     // ALIMTALK | SMS | ALIMTALK_THEN_SMS
 });
 // { accepted: true, requestId: "order_20260908_001" } = 접수. 도착/결제 완료 아님.
 const list = await billing.listInvoices({ month: "2026-09", page: 1, size: 10 });
@@ -63,13 +69,14 @@ const list = await billing.listInvoices({ month: "2026-09", page: 1, size: 10 })
 import os
 from caripay import CariPayBilling
 
-billing = CariPayBilling.from_env()
+billing = CariPayBilling.login(email=os.environ["CARIPAY_BILLING_EMAIL"], password=os.environ["CARIPAY_BILLING_PASSWORD"])
 result = billing.send_invoice(
     request_id="order_20260908_001",
     amount=128000,
     recipient={"name": "고객명", "phone": os.environ["CUSTOMER_PHONE"]},
     reason="예약금",
     message="예약 내용을 확인해 주세요.",
+    channel="ALIMTALK_THEN_SMS",   # ALIMTALK | SMS | ALIMTALK_THEN_SMS
 )
 ```
 
@@ -126,6 +133,8 @@ const { transSeqno, redirectUrl } = await pay.createPayment({
   payerName: "홍길동",
   reason: "8월 수강료",
   confirmUrl: "https://api.example.com/caripay/callback",
+  returnUrl: "https://example.com/orders/done", // 선택: 결제 후 고객 브라우저 복귀(≤100자). 승인 판정은 조회로
+  tempValue: "order-8812",                       // 선택: 콜백·복귀 URL 에 그대로 돌아오는 값
 });
 // redirectUrl → 바로 리다이렉트하거나 문자/알림톡으로 발송
 
@@ -133,7 +142,7 @@ const { transSeqno, redirectUrl } = await pay.createPayment({
 const p = await pay.confirmCallback(transSeqno);
 if (p.paid && p.amount === 128000) { /* 이용권 해금 */ }
 
-// ③ 취소 (금액 생략 시 전액)
+// ③ 취소 — 승인금액 전액만 가능 (부분 취소 불가). 금액 생략 시 조회해서 전액 취소
 await pay.cancelPayment({ transSeqno });
 ```
 
@@ -204,7 +213,7 @@ curl -X POST https://dev-api.chewingpay.com/api/requestPayment \
 |---|---|---|---|
 | 결제 생성 → 링크 발급 | `POST /api/requestPayment` | `createPayment()` | `create_payment()` |
 | 상태 조회 (승인 확인) | `POST /api/searchPayment` | `getPayment()` | `get_payment()` |
-| 취소/환불 · 청구서 삭제 | `POST /api/requestPaymentCancel` | `cancelPayment()` / `deleteBill()` | `cancel_payment()` / `delete_bill()` |
+| 취소(전액)/환불 · 청구서 삭제 | `POST /api/requestPaymentCancel` | `cancelPayment()` / `deleteBill()` | `cancel_payment()` / `delete_bill()` |
 | 완료 콜백 (파트너가 구현) | `POST {CONFIRM_URL}` | `confirmCallback()` | `confirm_callback()` |
 
 상태값: `STORE_REQUEST`(대기) → `APPROVE_COMPLETE`(**승인 완료**) / `APPROVE_FAIL` / `CANCEL_COMPLETE` / `CANCEL_FAIL` / `STORE_DELETE`

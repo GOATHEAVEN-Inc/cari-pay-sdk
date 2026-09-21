@@ -30,8 +30,13 @@ const cfg = { platformCode: "PC0001", storeCode: "SD0001", apiKey: KEY, mode: "t
   const r = await pay.createPayment({
     transSeqno: "svc001", amount: 12000, mobileNo: "010-1234-5678",
     payerName: "홍길동", reason: "8월 수강료", confirmUrl: "https://me/cb",
+    returnUrl: "https://me/done", tempValue: 8812,
   });
   assert.equal(r.redirectUrl, "https://pay/x");
+  assert.equal(sent.body.RETURN_DISPLAY_YN, "Y");          // returnUrl 을 주면 결제 후 복귀 켜짐
+  assert.equal(sent.body.RETURN_URL, "https://me/done");
+  assert.equal(sent.body.TEMP_VALUE, "8812");              // 문자열로 실림
+  assert.equal("USER_ID" in sent.body, false);
   assert.equal(sent.url, "https://dev-api.chewingpay.com/api/requestPayment");
   assert.equal(sent.body.APPROVAL_AMOUNT, "12000");        // 문자열 금액
   assert.equal(sent.body.MOBILE_NO, "01012345678");        // 하이픈 제거
@@ -50,6 +55,8 @@ const cfg = { platformCode: "PC0001", storeCode: "SD0001", apiKey: KEY, mode: "t
   await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, confirmUrl: "" }), CariPayError);
   await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, confirmUrl: "http://example.com/callback" }), CariPayError);
   await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, orderType: "X" }), CariPayError);
+  await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, returnUrl: "http://example.com/done" }), CariPayError);
+  await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, returnUrl: "https://example.com/" + "x".repeat(100) }), CariPayError);
 }
 
 // 5. 실패 응답은 RESULT_CODE 기준으로 던진다 (최상위 result_code는 0/"0" 흔들림 무시)

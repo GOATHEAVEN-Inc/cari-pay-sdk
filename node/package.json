@@ -1,14 +1,33 @@
 {
   "name": "@caripay/sdk",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "CARI PAY 결제 게이트웨이 공식 SDK — 결제 생성/조회/취소/콜백",
   "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
-  "files": ["index.js", "index.d.ts", "README.md"],
-  "exports": { ".": { "types": "./index.d.ts", "default": "./index.js" } },
-  "engines": { "node": ">=18" },
-  "scripts": { "test": "node test.mjs && node billing.test.mjs" },
-  "keywords": ["caripay", "카리페이", "payment", "pg", "결제"],
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node test.mjs && node billing.test.mjs"
+  },
+  "keywords": [
+    "caripay",
+    "카리페이",
+    "payment",
+    "pg",
+    "결제"
+  ],
   "license": "UNLICENSED"
 }
