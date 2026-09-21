@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: CARI PAY 청구서 발송 API
-  version: 1.3.0
+  version: 1.4.0
   description: |
     가맹점 인증으로 청구서를 생성하고 카리(CARI) 범용 알림톡을 발송하는 API.
     결제 링크 생성용 API_SIGN과 다른 인증을 사용한다. 업체별 청구 기능 등록이 필요하다.
@@ -186,7 +186,15 @@ components:
           description: |
             결제 완료·취소 시 POST 받을 파트너 웹훅 주소(https 만). 본문: event(bill.paid|bill.canceled), billId, requestId, transSeqNo,
             status, amount, reason, paidAt, canceledAt, occurredAt. 헤더 X-CariPay-Event / X-CariPay-Delivery.
-            2xx 가 아니면 1분·5분·30분·2시간 뒤 재시도 후 포기(총 5회). 본문에 서명이 없으므로 수신 후 getInvoice 로 상태를 확인한다.
+            2xx 가 아니면 1분·5분·30분·2시간 뒤 재시도 후 포기(총 5회). webhookSecret 이 있으면 X-CariPay-Signature 가 붙는다.
+            어느 쪽이든 수신 후 getInvoice 로 상태를 확인한다.
+        webhookSecret:
+          type: string
+          pattern: '^[\x21-\x7E]{16,128}$'
+          nullable: true
+          description: |
+            웹훅 서명 비밀(webhookUrl 과 함께). 있으면 전송마다 헤더 X-CariPay-Signature: t=<unix초>,v1=<hex> 를 붙인다.
+            v1 = HMAC-SHA256(secret, "<t>.<본문 원문>") 소문자 hex. 수신 측은 같은 식으로 계산해 상수 시간 비교하고 |now - t| ≤ 300초를 확인한다.
         billTemplateId: { type: string, nullable: true, description: '단순 청구는 null. 알리고 템플릿 코드가 아님.' }
         items: { type: array, nullable: true, items: { type: object }, description: '단순 금액 청구는 null' }
         relatedSubject: { type: string, nullable: true }

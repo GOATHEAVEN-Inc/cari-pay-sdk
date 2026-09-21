@@ -12,11 +12,23 @@ export interface SendInvoiceInput {
   message?: string;
   /** 기본 ALIMTALK */
   channel?: SendChannel;
-  /** 결제 완료·취소 시 POST 받을 https 주소(≤500자). 본문에 서명이 없으니 수신 후 getInvoice 로 확인. */
+  /** 결제 완료·취소 시 POST 받을 https 주소(≤500자). 수신 후 getInvoice 로 확정. */
   webhookUrl?: string;
+  /** 웹훅 서명 비밀(공백 없는 ASCII 16~128자). 있으면 X-CariPay-Signature 헤더가 붙는다. verifyWebhookSignature 로 검증 */
+  webhookSecret?: string;
 }
 
-/** webhookUrl 로 POST 되는 본문. 헤더 X-CariPay-Event: bill.paid | bill.canceled */
+/** X-CariPay-Signature("t=<unix초>,v1=<hex>") 검증. body 는 파싱 전 본문 원문. 기본 허용 오차 300초 */
+export declare function verifyWebhookSignature(o: {
+  secret: string;
+  signature: string | undefined | null;
+  body: string | Uint8Array;
+  toleranceSec?: number;
+  /** 테스트용 현재 시각(unix초) */
+  now?: number;
+}): boolean;
+
+/** webhookUrl 로 POST 되는 본문. 헤더 X-CariPay-Event: bill.paid | bill.canceled, X-CariPay-Delivery, (webhookSecret 지정 시) X-CariPay-Signature */
 export interface InvoiceWebhookPayload {
   event: "bill.paid" | "bill.canceled";
   billId: string;

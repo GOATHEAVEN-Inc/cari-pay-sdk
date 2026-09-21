@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { CariPayBilling, CariPayError } from './index.js';
+import { verifyWebhookSignature, CariPayBilling, CariPayError } from './index.js';
 
 const input = { requestId: 'order_20260908_001', amount: 128000,
   recipient: { name: '테스트 고객', phone: '010-0000-0000' }, reason: '수리비', message: '내역을 확인해 주세요.' };
@@ -66,6 +66,28 @@ assert.equal(attempts, 1);
   assert.equal('webhookUrl' in sent[0], false);
   await assert.rejects(() => blocked.sendInvoice({ ...input, webhookUrl: 'http://partner.example/hook' }), CariPayError);
   await assert.rejects(() => blocked.sendInvoice({ ...input, webhookUrl: 'https://partner.example/' + 'x'.repeat(500) }), CariPayError);
+  // 웹훅 서명 비밀: URL 과 함께, ASCII 16~128자. 없으면 본문에 키 자체가 없다
+  await b.sendInvoice({ ...input, webhookUrl: 'https://partner.example/caripay/hook', webhookSecret: 'whsec_0123456789abcdef' });
+  assert.equal(sent.at(-1).webhookSecret, 'whsec_0123456789abcdef');
+  assert.equal('webhookSecret' in sent[0], false);
+  await assert.rejects(() => blocked.sendInvoice({ ...input, webhookSecret: 'whsec_0123456789abcdef' }), CariPayError);
+  await assert.rejects(() => blocked.sendInvoice({ ...input, webhookUrl: 'https://partner.example/hook', webhookSecret: 'short' }), CariPayError);
+  await assert.rejects(() => blocked.sendInvoice({ ...input, webhookUrl: 'https://partner.example/hook', webhookSecret: 'has space in the secret!' }), CariPayError);
+}
+
+// 웹훅 서명 검증: 서버(BillWebhookService)와 같은 벡터, 시각 허용 오차, 변조·형식 오류
+{
+  const body = '{"event":"bill.paid"}';
+  const sig = 't=1758430800,v1=ae201a94ae2764a1f463601781a180495c5cdd9de3b7a29c09004cca3a251387';
+  const ok = (o) => verifyWebhookSignature({ secret: 'whsec_0123456789abcdef', signature: sig, body, now: 1758430800, ...o });
+  assert.equal(ok(), true);
+  assert.equal(ok({ body: Buffer.from(body, 'utf8') }), true);
+  assert.equal(ok({ now: 1758430800 + 299 }), true);
+  assert.equal(ok({ now: 1758430800 + 301 }), false);
+  assert.equal(ok({ body: '{"event":"bill.canceled"}' }), false);
+  assert.equal(ok({ secret: 'whsec_other_secret_value' }), false);
+  assert.equal(ok({ signature: 't=1758430800,v1=00' }), false);
+  assert.equal(ok({ signature: undefined }), false);
 }
 
 // 로그인 → 토큰 만료(-2) → 갱신 → 재시도 → 갱신 실패 시 재로그인. 발송 요청 본문은 그대로 다시 나간다.
