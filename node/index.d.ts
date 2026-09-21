@@ -12,6 +12,22 @@ export interface SendInvoiceInput {
   message?: string;
   /** 기본 ALIMTALK */
   channel?: SendChannel;
+  /** 결제 완료·취소 시 POST 받을 https 주소(≤500자). 본문에 서명이 없으니 수신 후 getInvoice 로 확인. */
+  webhookUrl?: string;
+}
+
+/** webhookUrl 로 POST 되는 본문. 헤더 X-CariPay-Event: bill.paid | bill.canceled */
+export interface InvoiceWebhookPayload {
+  event: "bill.paid" | "bill.canceled";
+  billId: string;
+  requestId: string | null;
+  transSeqNo: string | null;
+  status: "PENDING" | "DONE" | "CANCELED" | null;
+  amount: number;
+  reason: string | null;
+  paidAt: string | null;
+  canceledAt: string | null;
+  occurredAt: string;
 }
 export declare class CariPayBilling {
   constructor(o: {

@@ -133,11 +133,17 @@ export class CariPayBilling {
   }
 
   /** 성공은 발송 접수이며 고객 도착/결제 완료가 아니다. requestId는 주문별로 저장해서 재사용한다. */
-  async sendInvoice({ requestId, amount, recipient, reason, message = "", channel = "ALIMTALK" } = {}) {
+  async sendInvoice({ requestId, amount, recipient, reason, message = "", channel = "ALIMTALK", webhookUrl } = {}) {
     if (typeof requestId !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(requestId)) {
       throw new CariPayError("requestId는 영숫자/_/- 8~64자여야 합니다.");
     }
     if (!SEND_CHANNELS.includes(channel)) throw new CariPayError(`channel은 ${SEND_CHANNELS.join(" | ")} 중 하나여야 합니다: ${channel}`);
+    // 결제 완료·취소 웹훅. HTTPS 만. 본문에 서명이 없으므로 수신 후 getInvoice 로 상태를 확인한다.
+    if (webhookUrl !== undefined && webhookUrl !== null) {
+      let u;
+      try { u = new URL(String(webhookUrl)); } catch { throw new CariPayError("webhookUrl은 유효한 URL이어야 합니다."); }
+      if (u.protocol !== "https:" || /\s/.test(String(webhookUrl)) || String(webhookUrl).length > 500) throw new CariPayError("webhookUrl은 500자 이하의 https:// 주소여야 합니다.");
+    }
     if (!Number.isSafeInteger(amount) || amount < 100 || amount > 2147483647) {
       throw new CariPayError("청구 금액은 100~2147483647원 사이의 정수여야 합니다.");
     }
@@ -151,6 +157,7 @@ export class CariPayBilling {
     const phone = typeof recipient?.phone === "string" ? recipient.phone.replace(/[ -]/g, "") : "";
     if (!/^\d{10,11}$/.test(phone)) throw new CariPayError("수신자 전화번호는 숫자 10~11자리여야 합니다.");
     const body = { templateType: "SAME", billTemplateId: null, requestId, amount, sendChannel: channel,
+      ...(webhookUrl ? { webhookUrl: String(webhookUrl) } : {}),
       reason: text(reason, 60, "청구 사유"), description: text(message, 200, "안내문", true),
       members: [{ studentName: name, studentPhone: phone, guardianPhone: null, studentBirthDate: null, classroomId: null }],
       items: null, relatedSubject: null, etc: null };

@@ -60,6 +60,12 @@ assert.equal(attempts, 1);
   await b.sendInvoice({ ...input, channel: 'ALIMTALK_THEN_SMS' });
   assert.deepEqual(sent.map((x) => x.sendChannel), ['SMS', 'ALIMTALK_THEN_SMS']);
   await assert.rejects(() => blocked.sendInvoice({ ...input, channel: 'EMAIL' }), CariPayError);
+  // 웹훅 주소: https 만, 없으면 본문에 키 자체가 없다
+  await b.sendInvoice({ ...input, webhookUrl: 'https://partner.example/caripay/hook' });
+  assert.equal(sent.at(-1).webhookUrl, 'https://partner.example/caripay/hook');
+  assert.equal('webhookUrl' in sent[0], false);
+  await assert.rejects(() => blocked.sendInvoice({ ...input, webhookUrl: 'http://partner.example/hook' }), CariPayError);
+  await assert.rejects(() => blocked.sendInvoice({ ...input, webhookUrl: 'https://partner.example/' + 'x'.repeat(500) }), CariPayError);
 }
 
 // 로그인 → 토큰 만료(-2) → 갱신 → 재시도 → 갱신 실패 시 재로그인. 발송 요청 본문은 그대로 다시 나간다.
