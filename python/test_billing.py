@@ -84,6 +84,23 @@ fails(lambda: billing.send_invoice(**{**invoice, "webhook_secret": "whsec_012345
 fails(lambda: billing.send_invoice(**{**invoice, "webhook_url": "https://partner.example/hook", "webhook_secret": "short"}))
 fails(lambda: billing.send_invoice(**{**invoice, "webhook_url": "https://partner.example/hook", "webhook_secret": "has space in the secret!"}))
 
+# 청구 항목: 서버 형식 매핑, amount 생략 시 합계, 잘못된 항목은 호출 전에 거절
+billing._opener = Opener()
+_no_amount = {k: v for k, v in invoice.items() if k != "amount"}
+billing.send_invoice(**{**_no_amount, "items": [{"name": "수학 특강", "price": 120000}, {"name": "교재", "price": 15000}]})
+_sent = json.loads(billing._opener.calls[-1].data)
+assert _sent["amount"] == 135000
+assert _sent["items"] == [{"name": "수학 특강", "price": 120000, "discountAmount": None, "discountUnit": None, "type": None},
+                          {"name": "교재", "price": 15000, "discountAmount": None, "discountUnit": None, "type": None}]
+billing.send_invoice(**invoice)
+assert json.loads(billing._opener.calls[-1].data)["items"] is None
+_n = len(billing._opener.calls)
+fails(lambda: billing.send_invoice(**{**invoice, "amount": 1000, "items": [{"name": "교재", "price": 999}]}))
+fails(lambda: billing.send_invoice(**{**_no_amount, "items": [{"name": "교재", "price": 99}]}))
+fails(lambda: billing.send_invoice(**{**_no_amount, "items": [{"name": "x" * 21, "price": 1000}]}))
+fails(lambda: billing.send_invoice(**{**_no_amount, "items": []}))
+assert len(billing._opener.calls) == _n
+
 # 웹훅 서명 검증: 서버와 같은 벡터, 허용 오차, 변조
 _body = '{"event":"bill.paid"}'
 _sig = "t=1758430800,v1=ae201a94ae2764a1f463601781a180495c5cdd9de3b7a29c09004cca3a251387"

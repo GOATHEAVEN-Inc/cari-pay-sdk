@@ -75,6 +75,27 @@ assert.equal(attempts, 1);
   await assert.rejects(() => blocked.sendInvoice({ ...input, webhookUrl: 'https://partner.example/hook', webhookSecret: 'has space in the secret!' }), CariPayError);
 }
 
+// 청구 항목: 서버 형식으로 매핑, amount 생략 시 합계, 합계 불일치·잘못된 항목은 호출 전에 거절
+{
+  const sent = [];
+  const b = new CariPayBilling({ accessToken: 'mock', fetch: async (url, init) => { sent.push(JSON.parse(init.body)); return new Response(JSON.stringify({ result_code: 0 })); } });
+  const { amount: _omit, ...noAmount } = input;
+  await b.sendInvoice({ ...noAmount, items: [{ name: '수학 특강', price: 120000 }, { name: '교재', price: 15000 }] });
+  assert.equal(sent.at(-1).amount, 135000);
+  assert.deepEqual(sent.at(-1).items, [
+    { name: '수학 특강', price: 120000, discountAmount: null, discountUnit: null, type: null },
+    { name: '교재', price: 15000, discountAmount: null, discountUnit: null, type: null },
+  ]);
+  await b.sendInvoice(input);
+  assert.equal(sent.at(-1).items, null);
+  const blockedCalls = sent.length;
+  await assert.rejects(() => b.sendInvoice({ ...input, amount: 1000, items: [{ name: '교재', price: 999 }] }), CariPayError);
+  await assert.rejects(() => b.sendInvoice({ ...noAmount, items: [{ name: '교재', price: 99 }] }), CariPayError);
+  await assert.rejects(() => b.sendInvoice({ ...noAmount, items: [{ name: 'x'.repeat(21), price: 1000 }] }), CariPayError);
+  await assert.rejects(() => b.sendInvoice({ ...noAmount, items: [] }), CariPayError);
+  assert.equal(sent.length, blockedCalls);
+}
+
 // 웹훅 서명 검증: 서버(BillWebhookService)와 같은 벡터, 시각 허용 오차, 변조·형식 오류
 {
   const body = '{"event":"bill.paid"}';

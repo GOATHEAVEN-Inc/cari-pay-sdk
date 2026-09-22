@@ -151,7 +151,7 @@ export class CariPayBilling {
   }
 
   /** 성공은 발송 접수이며 고객 도착/결제 완료가 아니다. requestId는 주문별로 저장해서 재사용한다. */
-  async sendInvoice({ requestId, amount, recipient, reason, message = "", channel = "ALIMTALK", webhookUrl, webhookSecret } = {}) {
+  async sendInvoice({ requestId, amount, recipient, reason, message = "", channel = "ALIMTALK", webhookUrl, webhookSecret, items } = {}) {
     if (typeof requestId !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(requestId)) {
       throw new CariPayError("requestId는 영숫자/_/- 8~64자여야 합니다.");
     }
@@ -165,6 +165,20 @@ export class CariPayBilling {
     if (webhookSecret !== undefined && webhookSecret !== null) {
       if (!webhookUrl) throw new CariPayError("webhookSecret은 webhookUrl과 함께 써야 합니다.");
       if (typeof webhookSecret !== "string" || !WEBHOOK_SECRET_RE.test(webhookSecret)) throw new CariPayError("webhookSecret은 공백 없는 ASCII 16~128자여야 합니다.");
+    }
+    // 청구 항목(상품명·금액). 알림톡·문자·결제 페이지에 그대로 나온다. amount 를 생략하면 항목 합계.
+    let lineItems = null;
+    if (items !== undefined && items !== null) {
+      if (!Array.isArray(items) || items.length < 1 || items.length > 30) throw new CariPayError("items는 1~30개 배열이어야 합니다.");
+      lineItems = items.map((it, i) => {
+        const itemName = typeof it?.name === "string" ? it.name.trim() : "";
+        if (!itemName || itemName.length > 20 || /[\r\n]/.test(itemName)) throw new CariPayError(`items[${i}].name은 한 줄 1~20자여야 합니다.`);
+        if (!Number.isSafeInteger(it?.price) || it.price < 100) throw new CariPayError(`items[${i}].price는 100원 이상 정수여야 합니다.`);
+        return { name: itemName, price: it.price, discountAmount: null, discountUnit: null, type: null };
+      });
+      const sum = lineItems.reduce((total, it) => total + it.price, 0);
+      if (amount === undefined || amount === null) amount = sum;
+      else if (amount !== sum) throw new CariPayError(`amount(${amount})가 items 합계(${sum})와 다릅니다.`);
     }
     if (!Number.isSafeInteger(amount) || amount < 100 || amount > 2147483647) {
       throw new CariPayError("청구 금액은 100~2147483647원 사이의 정수여야 합니다.");
@@ -183,7 +197,7 @@ export class CariPayBilling {
       ...(webhookSecret ? { webhookSecret } : {}),
       reason: text(reason, 60, "청구 사유"), description: text(message, 200, "안내문", true),
       members: [{ studentName: name, studentPhone: phone, guardianPhone: null, studentBirthDate: null, classroomId: null }],
-      items: null, relatedSubject: null, etc: null };
+      items: lineItems, relatedSubject: null, etc: null };
     await this.#call("/app/v1/sales/bill", body);
     return { accepted: true, requestId };
   }
