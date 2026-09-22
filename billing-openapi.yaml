@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: CARI PAY 청구서 발송 API
-  version: 1.4.0
+  version: 1.5.0
   description: |
     가맹점 인증으로 청구서를 생성하고 카리(CARI) 범용 알림톡을 발송하는 API.
     결제 링크 생성용 API_SIGN과 다른 인증을 사용한다. 업체별 청구 기능 등록이 필요하다.
@@ -196,7 +196,22 @@ components:
             웹훅 서명 비밀(webhookUrl 과 함께). 있으면 전송마다 헤더 X-CariPay-Signature: t=<unix초>,v1=<hex> 를 붙인다.
             v1 = HMAC-SHA256(secret, "<t>.<본문 원문>") 소문자 hex. 수신 측은 같은 식으로 계산해 상수 시간 비교하고 |now - t| ≤ 300초를 확인한다.
         billTemplateId: { type: string, nullable: true, description: '단순 청구는 null. 알리고 템플릿 코드가 아님.' }
-        items: { type: array, nullable: true, items: { type: object }, description: '단순 금액 청구는 null' }
+        items:
+          type: array
+          nullable: true
+          maxItems: 30
+          description: |
+            청구 항목(상품명·금액). 있으면 알림톡 안내 메시지 자리와 문자 본문에 "[청구 항목]" 목록(5줄까지, 나머지는 "외 N건")으로,
+            결제 페이지(caripay.co.kr/pay/{거래번호})에는 전부 나온다. price 합계가 amount 와 같아야 한다. 단순 금액 청구는 null.
+          items:
+            type: object
+            required: [name, price]
+            properties:
+              name: { type: string, minLength: 1, maxLength: 20 }
+              price: { type: integer, minimum: 100, description: '항목 금액(원). 수량이 있으면 합친 금액' }
+              discountAmount: { type: integer, nullable: true }
+              discountUnit: { type: string, enum: [AMOUNT, RATE], nullable: true }
+              type: { type: string, nullable: true, description: '과세 유형. null 이면 가맹점 기본값' }
         relatedSubject: { type: string, nullable: true }
         etc: { type: string, nullable: true }
         members:

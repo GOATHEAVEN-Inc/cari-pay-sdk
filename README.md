@@ -63,6 +63,14 @@ const result = await billing.sendInvoice({
   webhookSecret: process.env.CARIPAY_WEBHOOK_SECRET,          // 선택: 있으면 X-CariPay-Signature 로 서명 (ASCII 16~128자)
 });
 // { accepted: true, requestId: "order_20260908_001" } = 접수. 도착/결제 완료 아님.
+// 상품이 여러 개면 items 로 보낸다 — 알림톡·문자에 "[청구 항목]" 목록, 결제 페이지에 전체 목록이 나온다.
+// amount 를 생략하면 항목 합계로 청구한다(주면 합계와 같아야 한다).
+await billing.sendInvoice({
+  requestId: "order_20260908_002",
+  recipient: { name: "고객명", phone: process.env.CUSTOMER_PHONE },
+  reason: "9월 수강료",
+  items: [{ name: "수학 특강", price: 120000 }, { name: "교재", price: 15000 }],
+});
 const list = await billing.listInvoices({ month: "2026-09", page: 1, size: 10 });
 // 목록에서 얻은 청구서 id로 billing.getInvoice(id): 발송 이력과 납부 상태 확인
 ```

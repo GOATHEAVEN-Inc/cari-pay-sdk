@@ -6,7 +6,8 @@ export type SendChannel = (typeof SEND_CHANNELS)[number];
 export interface SendInvoiceInput {
   /** 주문별로 저장. 응답이 유실되어도 같은 내용에는 같은 ID를 사용. */
   requestId: string;
-  amount: number;
+  /** 청구 금액(원, ≥100). items 를 주면 생략 가능(항목 합계) — 주면 합계와 같아야 한다 */
+  amount?: number;
   recipient: { name: string; phone: string };
   reason: string;
   message?: string;
@@ -16,6 +17,8 @@ export interface SendInvoiceInput {
   webhookUrl?: string;
   /** 웹훅 서명 비밀(공백 없는 ASCII 16~128자). 있으면 X-CariPay-Signature 헤더가 붙는다. verifyWebhookSignature 로 검증 */
   webhookSecret?: string;
+  /** 청구 항목(상품명 1~20자, 금액 ≥100원). 알림톡·문자(5줄까지)와 결제 페이지에 나온다. 최대 30개 */
+  items?: { name: string; price: number }[];
 }
 
 /** X-CariPay-Signature("t=<unix초>,v1=<hex>") 검증. body 는 파싱 전 본문 원문. 기본 허용 오차 300초 */

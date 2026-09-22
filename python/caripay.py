@@ -181,8 +181,9 @@ class CariPayBilling:
             raise CariPayError("청구 API 요청 실패", code=str(code) if code is not None else None)
         return data.get("result_data")
 
-    def send_invoice(self, *, request_id: str, amount: int, recipient: dict, reason: str, message: str = "",
-                     channel: str = "ALIMTALK", webhook_url: Optional[str] = None, webhook_secret: Optional[str] = None):
+    def send_invoice(self, *, request_id: str, recipient: dict, reason: str, amount: Optional[int] = None, message: str = "",
+                     channel: str = "ALIMTALK", webhook_url: Optional[str] = None, webhook_secret: Optional[str] = None,
+                     items: Optional[Sequence[dict]] = None):
         """성공은 접수만 의미. 주문별 request_id를 저장하고 같은 요청 재시도 시 재사용하세요."""
         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", request_id):
             raise CariPayError("request_id는 영숫자/_/- 8~64자여야 합니다.")
@@ -197,6 +198,25 @@ class CariPayBilling:
                 raise CariPayError("webhook_secret은 webhook_url과 함께 써야 합니다.")
             if not isinstance(webhook_secret, str) or not _WEBHOOK_SECRET_RE.fullmatch(webhook_secret):
                 raise CariPayError("webhook_secret은 공백 없는 ASCII 16~128자여야 합니다.")
+        # 청구 항목(상품명·금액). 알림톡·문자·결제 페이지에 그대로 나온다. amount 를 생략하면 항목 합계.
+        line_items = None
+        if items is not None:
+            if isinstance(items, (str, bytes)) or not isinstance(items, Sequence) or not 1 <= len(items) <= 30:
+                raise CariPayError("items는 1~30개 목록이어야 합니다.")
+            line_items = []
+            for i, it in enumerate(items):
+                item_name = it.get("name").strip() if isinstance(it, dict) and isinstance(it.get("name"), str) else ""
+                if not item_name or len(item_name) > 20 or re.search(r"[\r\n]", item_name):
+                    raise CariPayError(f"items[{i}].name은 한 줄 1~20자여야 합니다.")
+                price = it.get("price")
+                if type(price) is not int or price < 100:
+                    raise CariPayError(f"items[{i}].price는 100원 이상 정수여야 합니다.")
+                line_items.append({"name": item_name, "price": price, "discountAmount": None, "discountUnit": None, "type": None})
+            total = sum(x["price"] for x in line_items)
+            if amount is None:
+                amount = total
+            elif amount != total:
+                raise CariPayError(f"amount({amount})가 items 합계({total})와 다릅니다.")
         if type(amount) is not int or not 100 <= amount <= 2147483647:
             raise CariPayError("청구 금액은 100~2147483647원 사이의 정수여야 합니다.")
 
@@ -218,7 +238,7 @@ class CariPayBilling:
             "reason": text(reason, 60, "청구 사유"), "description": text(message, 200, "안내문", True),
             "members": [{"studentName": name, "studentPhone": phone, "guardianPhone": None,
                          "studentBirthDate": None, "classroomId": None}],
-            "items": None, "relatedSubject": None, "etc": None,
+            "items": line_items, "relatedSubject": None, "etc": None,
         }
         if webhook_url:
             body["webhookUrl"] = str(webhook_url)
