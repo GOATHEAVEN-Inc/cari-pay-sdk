@@ -30,6 +30,7 @@ _PATHS = {
     "create": "/api/requestPayment",
     "search": "/api/searchPayment",
     "cancel": "/api/requestPaymentCancel",
+    "test_approve": "/api/test/approvePayment",
 }
 
 APPROVED = "APPROVE_COMPLETE"
@@ -470,6 +471,14 @@ class CariPay:
         if not data.get("REDIRECT_URL"):
             raise CariPayError("REDIRECT_URL이 없습니다.", trans_seqno=seqno, response=data)
         return {"trans_seqno": seqno, "redirect_url": data["REDIRECT_URL"], "raw": data}
+
+    def approve_test_payment(self, trans_seqno: str) -> Dict[str, Any]:
+        """테스트 게이트웨이 전용: 미결제 거래를 승인 완료로 바꾸고 CONFIRM_URL 로 결제 완료 콜백을 보낸다(실결제 없음).
+        테스트 게이트웨이는 실제 카드 결제가 되지 않아, 콜백 → 조회 → 주문 확정 경로를 이것으로 시험한다."""
+        if self.base_url == BASE_URLS["live"]:
+            raise CariPayError("approve_test_payment는 테스트 게이트웨이 전용입니다.")
+        self._call(_PATHS["test_approve"], _check_seqno(trans_seqno))
+        return self.get_payment(trans_seqno)
 
     def get_payment(self, trans_seqno: str) -> Dict[str, Any]:
         """결제 상태 조회. 승인 확인의 유일한 근거."""

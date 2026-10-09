@@ -221,6 +221,7 @@ const PATHS = {
   create: "/api/requestPayment",
   search: "/api/searchPayment",
   cancel: "/api/requestPaymentCancel",
+  testApprove: "/api/test/approvePayment",
 };
 
 /** 승인완료 상태값. 그 외는 미승인으로 취급한다. */
@@ -457,6 +458,16 @@ export class CariPay {
       throw new CariPayError("REDIRECT_URL이 없습니다.", { transSeqno: seq, response: d });
     }
     return { transSeqno: seq, redirectUrl: d.REDIRECT_URL, raw: d };
+  }
+
+  /**
+   * 테스트 게이트웨이 전용: 미결제 거래를 승인 완료로 바꾸고 CONFIRM_URL 로 결제 완료 콜백을 보낸다(실결제 없음).
+   * 테스트 게이트웨이는 실제 카드 결제가 되지 않아, 콜백 → 조회 → 주문 확정 경로를 이것으로 시험한다.
+   */
+  async approveTestPayment(transSeqno) {
+    if (this.baseUrl === BASE_URLS.live) throw new CariPayError("approveTestPayment는 테스트 게이트웨이 전용입니다.");
+    await this.#call(PATHS.testApprove, checkTransSeqno(transSeqno));
+    return this.getPayment(transSeqno);
   }
 
   /** 결제 상태 조회 (승인 확인의 유일한 근거) */

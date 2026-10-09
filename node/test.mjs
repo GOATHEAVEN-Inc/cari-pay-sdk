@@ -120,6 +120,19 @@ const cfg = { platformCode: "PC0001", storeCode: "SD0001", apiKey: KEY, mode: "t
   assert.equal(n, 3);
 }
 
+// 8-1. 테스트 승인: 테스트 게이트웨이에서만 부르고, 승인 후 조회 결과를 돌려준다
+{
+  const paths = [];
+  const pay = new CariPay({ ...cfg, fetch: async (url) => {
+    paths.push(new URL(url).pathname);
+    return new Response(JSON.stringify({ result_data: { RESULT_CODE: "0000", APPROVE_STATUS: "APPROVE_COMPLETE" } }));
+  } });
+  assert.equal((await pay.approveTestPayment("svc001")).paid, true);
+  assert.deepEqual(paths, ["/api/test/approvePayment", "/api/searchPayment"]);
+  const live = new CariPay({ ...cfg, mode: "live", fetch: async () => assert.fail("호출되면 안 됨") });
+  await assert.rejects(() => live.approveTestPayment("svc001"), CariPayError);
+}
+
 // 9. live 모드 주소
 assert.equal(new CariPay({ ...cfg, mode: "live" }).baseUrl, "https://api.chewingpay.com");
 assert.throws(() => new CariPay({ ...cfg, mode: "prod" }), CariPayError);

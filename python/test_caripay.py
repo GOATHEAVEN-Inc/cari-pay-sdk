@@ -131,6 +131,19 @@ stub(pay, polling)
 assert pay.wait_for_payment("svc001", interval=0.001, timeout=5)["paid"] is True
 assert state["n"] == 3
 
+# 8-1. 테스트 승인: 테스트 게이트웨이에서만 부르고, 승인 후 조회 결과를 돌려준다
+pay = CariPay(**CFG)
+sent = stub(pay, lambda url, body: {"result_data": {"RESULT_CODE": "0000", "APPROVE_STATUS": "APPROVE_COMPLETE"}})
+assert pay.approve_test_payment("svc001")["paid"] is True
+assert [s["url"].rsplit(".com", 1)[1] for s in sent] == ["/api/test/approvePayment", "/api/searchPayment"]
+live = CariPay(**dict(CFG, mode="live"))
+stub(live, lambda url, body: (_ for _ in ()).throw(AssertionError("호출되면 안 됨")))
+try:
+    live.approve_test_payment("svc001")
+    raise AssertionError("live 에서 통과되면 안 됨")
+except CariPayError:
+    pass
+
 # 9. 모드/필수값
 assert CariPay(**dict(CFG, mode="live")).base_url == "https://api.chewingpay.com"
 for bad_init in (dict(CFG, mode="prod"), dict(platform_code="PC", store_code="SD", api_key="")):
