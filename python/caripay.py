@@ -388,8 +388,12 @@ class CariPay:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            return response.read().decode("utf-8")
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            # 400(VALIDATION_ERROR 등)도 본문에 RESULT_CODE·RESULT_MSG 가 온다 — 판정은 _call 이 한다.
+            return exc.read().decode("utf-8")
 
     def _call(self, path: str, trans_seqno: str,
               extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

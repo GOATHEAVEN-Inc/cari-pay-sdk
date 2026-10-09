@@ -140,4 +140,33 @@ for bad_init in (dict(CFG, mode="prod"), dict(platform_code="PC", store_code="SD
     except CariPayError:
         pass
 
+# 10. HTTP 400 검증 오류도 RESULT_CODE·필드 메시지를 그대로 전한다(로컬 가짜 서버)
+import http.server
+import threading
+
+
+class _Gw(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        body = json.dumps({"result_code": -10, "result_data": {
+            "RESULT_CODE": "VALIDATION_ERROR", "RESULT_MSG": "PAY_USER_NAME: 50자 이내여야 합니다"}}).encode()
+        self.send_response(400)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+srv = http.server.HTTPServer(("127.0.0.1", 0), _Gw)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+try:
+    CariPay(**dict(CFG, base_url=f"http://127.0.0.1:{srv.server_port}")).get_payment("svc001")
+    raise AssertionError("400 이 성공으로 처리되면 안 됨")
+except CariPayError as e:
+    assert e.code == "VALIDATION_ERROR" and "PAY_USER_NAME" in str(e), (e.code, str(e))
+finally:
+    srv.shutdown()
+
 print("✅ 전부 통과")
