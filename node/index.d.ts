@@ -137,6 +137,8 @@ export declare class CariPay {
   static fromEnv(env?: Record<string, string | undefined>): CariPay;
   createPayment(input: CreatePaymentInput): Promise<{ transSeqno: string; redirectUrl: string; raw: Record<string, unknown> }>;
   getPayment(transSeqno: string): Promise<Payment>;
+  /** 테스트 게이트웨이 전용: 미결제 거래를 승인 완료로 바꾸고 결제 완료 콜백을 보낸다(실결제 없음). live 에서는 예외. */
+  approveTestPayment(transSeqno: string): Promise<Payment>;
   /** 승인금액 전액 취소만 가능. amount 를 넘기면 승인금액과 같아야 한다. */
   cancelPayment(o: { transSeqno: string; amount?: number | string; mobileNo?: string }): Promise<{ transSeqno: string; canceledAmount: number | null; raw: Record<string, unknown> }>;
   deleteBill(o: { transSeqno: string; amount: number | string; mobileNo: string }): Promise<{ transSeqno: string; raw: Record<string, unknown> }>;

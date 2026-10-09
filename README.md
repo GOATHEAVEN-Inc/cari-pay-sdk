@@ -259,7 +259,8 @@ curl -X POST https://dev-api.chewingpay.com/api/requestPayment \
 ## 오픈 전 체크
 
 - [ ] 거래번호(`TRANS_SEQNO`)가 전 시스템에서 유일한 구조인가 (`newTransSeqno()` 사용 권장)
-- [ ] 테스트 게이트웨이에서 결제 → 콜백 → 조회 → 취소 전 구간 1회 이상 통과
+- [ ] 입력 한도 — 거래번호 영문·숫자·_·- 40자, 콜백 주소 https 100자(localhost 불가, 로컬은 터널), 결제자명 50자, 임의값 200자, 회원 ID 30자. 넘으면 게이트웨이가 `VALIDATION_ERROR` 로 거절합니다(SDK 1.6.0 은 호출 전에 막음)
+- [ ] 테스트 게이트웨이에서 결제 → 콜백 → 조회 → 취소 전 구간 1회 이상 통과 (테스트 게이트웨이는 실제 카드 결제가 되지 않습니다 — `approveTestPayment(거래번호)` / `approve_test_payment()` 로 승인과 콜백을 흉내 냅니다)
 - [ ] 승인금액과 주문금액 대사 로직 존재
 - [ ] 운영 키로 환경변수 교체 (`CARIPAY_MODE=live`)
 - [ ] `API_KEY`가 코드·로그·클라이언트 번들에 없음
