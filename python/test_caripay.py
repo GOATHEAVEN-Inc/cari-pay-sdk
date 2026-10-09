@@ -70,7 +70,13 @@ base = dict(mobile_no="01012345678", payer_name="홍", reason="r", confirm_url="
 for bad in (dict(base, amount=0), dict(base, amount=-1), dict(base, amount=10**13),
             dict(base, amount=1000, mobile_no="123"), dict(base, amount=1000, confirm_url=""),
             dict(base, amount=1000, confirm_url="http://example.com/callback"),
-            dict(base, amount=1000, order_type="X")):
+            dict(base, amount=1000, order_type="X"),
+            # 게이트웨이 컬럼 한도 — 넘기면 서버가 VALIDATION_ERROR 로 거절하므로 호출 전에 막는다
+            dict(base, amount=1000, trans_seqno="x" * 41), dict(base, amount=1000, trans_seqno="주문-1"),
+            dict(base, amount=1000, confirm_url="http://localhost:3000/cb"),
+            dict(base, amount=1000, confirm_url="https://example.com/" + "x" * 81),
+            dict(base, amount=1000, payer_name="가" * 51), dict(base, amount=1000, temp_value="x" * 201),
+            dict(base, amount=1000, user_id="x" * 31)):
     try:
         pay.create_payment(**bad)
         raise AssertionError(f"검증 통과되면 안 됨: {bad}")

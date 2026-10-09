@@ -285,10 +285,20 @@ function checkMobile(mobileNo) {
   return s;
 }
 
-function checkTransSeqno(transSeqno) {
+// 게이트웨이 컬럼이 40자다. 새 거래번호는 영문·숫자·_·- 만 받는다(서버도 같은 규칙으로 VALIDATION_ERROR).
+// 조회·취소는 옛 거래번호도 찾을 수 있게 길이만 본다.
+function checkTransSeqno(transSeqno, create = false) {
   const s = String(req(transSeqno, "transSeqno"));
-  if (s.length > 64) throw new CariPayError("transSeqno는 64자 이하여야 합니다.");
+  if (s.length > 40 || (create && !/^[A-Za-z0-9_-]+$/.test(s))) {
+    throw new CariPayError("transSeqno는 영문·숫자·_·- 40자 이하여야 합니다.");
+  }
   return s;
+}
+
+function checkMax(value, name, max) {
+  if (value === undefined || value === null) return value;
+  if (String(value).length > max) throw new CariPayError(`${name}은(는) ${max}자 이하여야 합니다.`);
+  return value;
 }
 
 function checkCallbackUrl(confirmUrl) {
@@ -299,10 +309,9 @@ function checkCallbackUrl(confirmUrl) {
   } catch {
     throw new CariPayError("confirmUrl은 유효한 URL이어야 합니다.");
   }
-  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-  if (url.protocol !== "https:" && !(local && url.protocol === "http:")) {
-    throw new CariPayError("confirmUrl은 HTTPS여야 합니다. 로컬 개발에서는 localhost HTTP만 허용됩니다.");
-  }
+  // 서버가 서버로 보내는 콜백이라 https 공개 주소만 받는다(로컬 개발은 ngrok·cloudflared 터널).
+  if (url.protocol !== "https:") throw new CariPayError("confirmUrl은 https:// 공개 주소여야 합니다. 로컬 개발은 ngrok·cloudflared 터널 주소를 쓰세요.");
+  if (value.length > 100) throw new CariPayError("confirmUrl은 100자 이하여야 합니다.");
   return value;
 }
 
@@ -425,23 +434,23 @@ export class CariPay {
     tempValue,
     userId,
   } = {}) {
-    const seq = checkTransSeqno(transSeqno);
+    const seq = checkTransSeqno(transSeqno, true);
     if (orderType !== "BILL" && orderType !== "SHOP") {
       throw new CariPayError(`orderType은 BILL | SHOP 이어야 합니다: ${orderType}`);
     }
     const d = await this.#call(PATHS.create, seq, {
       APPROVAL_AMOUNT: checkAmount(amount),
       MOBILE_NO: checkMobile(mobileNo),
-      PAY_USER_NAME: req(payerName, "payerName"),
-      REQUEST_REASON: req(reason, "reason"),
-      INFO_MESSAGE: infoMessage,
+      PAY_USER_NAME: checkMax(req(payerName, "payerName"), "payerName", 50),
+      REQUEST_REASON: checkMax(req(reason, "reason"), "reason", 2000),
+      INFO_MESSAGE: checkMax(infoMessage, "infoMessage", 2000),
       CONFIRM_URL: checkCallbackUrl(confirmUrl),
       orderType,
       // 결제 완료 후 결제 페이지가 고객 브라우저를 돌려보낼 곳(≤100자). 승인 판정은 여기가 아니라 조회 API로 한다.
       ...(returnUrl ? { RETURN_DISPLAY_YN: "Y", RETURN_URL: checkReturnUrl(returnUrl) } : {}),
       // 콜백·리턴에 그대로 돌아오는 임의값(주문 ID 등)
-      ...(tempValue !== undefined && tempValue !== null ? { TEMP_VALUE: String(tempValue) } : {}),
-      ...(userId !== undefined && userId !== null ? { USER_ID: String(userId) } : {}),
+      ...(tempValue !== undefined && tempValue !== null ? { TEMP_VALUE: String(checkMax(tempValue, "tempValue", 200)) } : {}),
+      ...(userId !== undefined && userId !== null ? { USER_ID: String(checkMax(userId, "userId", 30)) } : {}),
       ...(items ? { ITEMS: items } : {}),
     });
     if (!d.REDIRECT_URL) {

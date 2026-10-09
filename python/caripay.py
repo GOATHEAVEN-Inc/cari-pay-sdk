@@ -311,19 +311,29 @@ def _check_mobile(mobile_no: Any) -> str:
     return digits
 
 
-def _check_seqno(trans_seqno: Any) -> str:
+def _check_seqno(trans_seqno: Any, create: bool = False) -> str:
+    # 게이트웨이 컬럼이 40자다. 새 거래번호는 영문·숫자·_·- 만 받는다(서버도 같은 규칙으로 VALIDATION_ERROR).
+    # 조회·취소는 옛 거래번호도 찾을 수 있게 길이만 본다.
     text = str(_required(trans_seqno, "trans_seqno"))
-    if len(text) > 64:
-        raise CariPayError("trans_seqno는 64자 이하여야 합니다.")
+    if len(text) > 40 or (create and not re.fullmatch(r"[A-Za-z0-9_-]+", text)):
+        raise CariPayError("trans_seqno는 영문·숫자·_·- 40자 이하여야 합니다.")
     return text
+
+
+def _check_max(value: Any, name: str, maximum: int) -> Any:
+    if value is not None and len(str(value)) > maximum:
+        raise CariPayError(f"{name}은(는) {maximum}자 이하여야 합니다.")
+    return value
 
 
 def _check_callback_url(confirm_url: Any) -> str:
     value = str(_required(confirm_url, "confirm_url"))
     parsed = urllib.parse.urlparse(value)
-    local = parsed.hostname in ("localhost", "127.0.0.1")
-    if not parsed.hostname or (parsed.scheme != "https" and not (local and parsed.scheme == "http")):
-        raise CariPayError("confirm_url은 HTTPS여야 합니다. 로컬 개발에서는 localhost HTTP만 허용됩니다.")
+    # 서버가 서버로 보내는 콜백이라 https 공개 주소만 받는다(로컬 개발은 ngrok·cloudflared 터널).
+    if not parsed.hostname or parsed.scheme != "https":
+        raise CariPayError("confirm_url은 https:// 공개 주소여야 합니다. 로컬 개발은 ngrok·cloudflared 터널 주소를 쓰세요.")
+    if len(value) > 100:
+        raise CariPayError("confirm_url은 100자 이하여야 합니다.")
     return value
 
 
@@ -429,16 +439,16 @@ class CariPay:
                     승인 판정은 여기가 아니라 조회 API로 한다.
         temp_value: 콜백·리턴에 그대로 돌아오는 임의값(주문 ID 등).
         """
-        seqno = _check_seqno(trans_seqno or new_trans_seqno())
+        seqno = _check_seqno(trans_seqno or new_trans_seqno(), create=True)
         if order_type not in ("BILL", "SHOP"):
             raise CariPayError(f"order_type은 BILL | SHOP 이어야 합니다: {order_type}")
 
         extra: Dict[str, Any] = {
             "APPROVAL_AMOUNT": _check_amount(amount),
             "MOBILE_NO": _check_mobile(mobile_no),
-            "PAY_USER_NAME": _required(payer_name, "payer_name"),
-            "REQUEST_REASON": _required(reason, "reason"),
-            "INFO_MESSAGE": info_message,
+            "PAY_USER_NAME": _check_max(_required(payer_name, "payer_name"), "payer_name", 50),
+            "REQUEST_REASON": _check_max(_required(reason, "reason"), "reason", 2000),
+            "INFO_MESSAGE": _check_max(info_message, "info_message", 2000),
             "CONFIRM_URL": _check_callback_url(confirm_url),
             "orderType": order_type,
         }
@@ -446,9 +456,9 @@ class CariPay:
             extra["RETURN_DISPLAY_YN"] = "Y"
             extra["RETURN_URL"] = _check_return_url(return_url)
         if temp_value is not None:
-            extra["TEMP_VALUE"] = str(temp_value)
+            extra["TEMP_VALUE"] = str(_check_max(temp_value, "temp_value", 200))
         if user_id is not None:
-            extra["USER_ID"] = str(user_id)
+            extra["USER_ID"] = str(_check_max(user_id, "user_id", 30))
         if items:
             extra["ITEMS"] = list(items)
 
