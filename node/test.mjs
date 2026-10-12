@@ -57,6 +57,15 @@ const cfg = { platformCode: "PC0001", storeCode: "SD0001", apiKey: KEY, mode: "t
   await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, orderType: "X" }), CariPayError);
   await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, returnUrl: "http://example.com/done" }), CariPayError);
   await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, returnUrl: "https://example.com/" + "x".repeat(100) }), CariPayError);
+  // 게이트웨이 컬럼 한도 — 넘기면 서버가 VALIDATION_ERROR 로 거절하므로 호출 전에 막는다
+  await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, transSeqno: "x".repeat(41) }), CariPayError);
+  await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, transSeqno: "주문-1" }), CariPayError);
+  await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, confirmUrl: "http://localhost:3000/cb" }), CariPayError);
+  await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, confirmUrl: "https://example.com/" + "x".repeat(81) }), CariPayError);
+  await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, payerName: "가".repeat(51) }), CariPayError);
+  await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, tempValue: "x".repeat(201) }), CariPayError);
+  await assert.rejects(() => pay.createPayment({ ...base, amount: 1000, userId: "x".repeat(31) }), CariPayError);
+  await assert.rejects(() => pay.getPayment("x".repeat(41)), CariPayError);
 }
 
 // 5. 실패 응답은 RESULT_CODE 기준으로 던진다 (최상위 result_code는 0/"0" 흔들림 무시)
@@ -109,6 +118,19 @@ const cfg = { platformCode: "PC0001", storeCode: "SD0001", apiKey: KEY, mode: "t
   const p = await pay.waitForPayment("svc001", { intervalMs: 1, timeoutMs: 1000 });
   assert.equal(p.paid, true);
   assert.equal(n, 3);
+}
+
+// 8-1. 테스트 승인: 테스트 게이트웨이에서만 부르고, 승인 후 조회 결과를 돌려준다
+{
+  const paths = [];
+  const pay = new CariPay({ ...cfg, fetch: async (url) => {
+    paths.push(new URL(url).pathname);
+    return new Response(JSON.stringify({ result_data: { RESULT_CODE: "0000", APPROVE_STATUS: "APPROVE_COMPLETE" } }));
+  } });
+  assert.equal((await pay.approveTestPayment("svc001")).paid, true);
+  assert.deepEqual(paths, ["/api/test/approvePayment", "/api/searchPayment"]);
+  const live = new CariPay({ ...cfg, mode: "live", fetch: async () => assert.fail("호출되면 안 됨") });
+  await assert.rejects(() => live.approveTestPayment("svc001"), CariPayError);
 }
 
 // 9. live 모드 주소

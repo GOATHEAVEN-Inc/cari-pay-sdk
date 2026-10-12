@@ -70,7 +70,13 @@ base = dict(mobile_no="01012345678", payer_name="홍", reason="r", confirm_url="
 for bad in (dict(base, amount=0), dict(base, amount=-1), dict(base, amount=10**13),
             dict(base, amount=1000, mobile_no="123"), dict(base, amount=1000, confirm_url=""),
             dict(base, amount=1000, confirm_url="http://example.com/callback"),
-            dict(base, amount=1000, order_type="X")):
+            dict(base, amount=1000, order_type="X"),
+            # 게이트웨이 컬럼 한도 — 넘기면 서버가 VALIDATION_ERROR 로 거절하므로 호출 전에 막는다
+            dict(base, amount=1000, trans_seqno="x" * 41), dict(base, amount=1000, trans_seqno="주문-1"),
+            dict(base, amount=1000, confirm_url="http://localhost:3000/cb"),
+            dict(base, amount=1000, confirm_url="https://example.com/" + "x" * 81),
+            dict(base, amount=1000, payer_name="가" * 51), dict(base, amount=1000, temp_value="x" * 201),
+            dict(base, amount=1000, user_id="x" * 31)):
     try:
         pay.create_payment(**bad)
         raise AssertionError(f"검증 통과되면 안 됨: {bad}")
@@ -125,6 +131,19 @@ stub(pay, polling)
 assert pay.wait_for_payment("svc001", interval=0.001, timeout=5)["paid"] is True
 assert state["n"] == 3
 
+# 8-1. 테스트 승인: 테스트 게이트웨이에서만 부르고, 승인 후 조회 결과를 돌려준다
+pay = CariPay(**CFG)
+sent = stub(pay, lambda url, body: {"result_data": {"RESULT_CODE": "0000", "APPROVE_STATUS": "APPROVE_COMPLETE"}})
+assert pay.approve_test_payment("svc001")["paid"] is True
+assert [s["url"].rsplit(".com", 1)[1] for s in sent] == ["/api/test/approvePayment", "/api/searchPayment"]
+live = CariPay(**dict(CFG, mode="live"))
+stub(live, lambda url, body: (_ for _ in ()).throw(AssertionError("호출되면 안 됨")))
+try:
+    live.approve_test_payment("svc001")
+    raise AssertionError("live 에서 통과되면 안 됨")
+except CariPayError:
+    pass
+
 # 9. 모드/필수값
 assert CariPay(**dict(CFG, mode="live")).base_url == "https://api.chewingpay.com"
 for bad_init in (dict(CFG, mode="prod"), dict(platform_code="PC", store_code="SD", api_key="")):
@@ -133,5 +152,34 @@ for bad_init in (dict(CFG, mode="prod"), dict(platform_code="PC", store_code="SD
         raise AssertionError("생성되면 안 됨")
     except CariPayError:
         pass
+
+# 10. HTTP 400 검증 오류도 RESULT_CODE·필드 메시지를 그대로 전한다(로컬 가짜 서버)
+import http.server
+import threading
+
+
+class _Gw(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        body = json.dumps({"result_code": -10, "result_data": {
+            "RESULT_CODE": "VALIDATION_ERROR", "RESULT_MSG": "PAY_USER_NAME: 50자 이내여야 합니다"}}).encode()
+        self.send_response(400)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+srv = http.server.HTTPServer(("127.0.0.1", 0), _Gw)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+try:
+    CariPay(**dict(CFG, base_url=f"http://127.0.0.1:{srv.server_port}")).get_payment("svc001")
+    raise AssertionError("400 이 성공으로 처리되면 안 됨")
+except CariPayError as e:
+    assert e.code == "VALIDATION_ERROR" and "PAY_USER_NAME" in str(e), (e.code, str(e))
+finally:
+    srv.shutdown()
 
 print("✅ 전부 통과")

@@ -160,8 +160,8 @@ components:
       properties:
         TRANS_SEQNO:
           type: string
-          maxLength: 64
-          description: 거래 고유번호. 파트너가 직접 채번하며 전 시스템에서 유일해야 합니다(서비스 접두어 권장).
+          maxLength: 40
+          description: 거래 고유번호. 파트너가 직접 채번하며 전 시스템에서 유일해야 합니다(서비스 접두어 권장). 새 결제는 영문·숫자·_·- 40자 이내만 받습니다.
           example: svc202608191200000123
         PLATFORM_CODE:
           type: string
@@ -197,17 +197,22 @@ components:
               example: "01012345678"
             PAY_USER_NAME:
               type: string
+              maxLength: 50
               description: 결제자명
             REQUEST_REASON:
               type: string
+              maxLength: 2000
               description: 결제 사유(주문명). 결제창·문자에 노출됩니다.
             INFO_MESSAGE:
               type: string
+              maxLength: 2000
               description: 결제창 안내 문구
             CONFIRM_URL:
               type: string
               format: uri
-              description: 결제 완료 시 호출될 파트너 백엔드 콜백 URL. **https:// 만 허용** — http 콜백은 전송되지 않습니다.
+              maxLength: 100
+              pattern: '^https://\S+$'
+              description: 결제 완료 시 호출될 파트너 백엔드 콜백 URL. **https:// 공개 주소, 100자 이내** — 아니면 VALIDATION_ERROR. 로컬 개발은 ngrok·cloudflared 터널 주소를 씁니다.
             RETURN_DISPLAY_YN:
               type: string
               enum: [Y, N]
@@ -216,13 +221,15 @@ components:
               type: string
               maxLength: 100
               description: |
-                결제 후 복귀 주소(HTTPS). `?RESULT_CODE=&RESULT_MSG=&TRANS_SEQNO=&MOBILE_NO=&APPROVAL_AMOUNT=&TEMP_VALUE=` 가 붙습니다.
+                결제 후 복귀 주소(HTTPS, 로컬 개발은 http://localhost 허용). 기존 쿼리는 유지되고 `RESULT_CODE·RESULT_MSG·TRANS_SEQNO·APPROVAL_AMOUNT·TEMP_VALUE` 가 붙습니다.
                 승인 판정은 여기가 아니라 searchPayment 로 합니다.
             TEMP_VALUE:
               type: string
+              maxLength: 200
               description: 파트너 임의값(주문 ID 등). 콜백·RETURN_URL 에 그대로 돌아옵니다.
             USER_ID:
               type: string
+              maxLength: 30
               description: 파트너 회원 식별자(참고용)
             orderType:
               type: string
