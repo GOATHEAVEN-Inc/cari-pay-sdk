@@ -218,15 +218,28 @@ npx @openapitools/openapi-generator-cli generate -i openapi.yaml -g java -o ./cl
 npx @redocly/cli preview-docs openapi.yaml
 ```
 
-서명만 맞추면 어떤 언어든 됩니다.
+서명만 맞추면 어떤 언어든 됩니다. **v2 서명**(SDK 1.7.0 부터 기본)은 작업·금액·시각을 묶습니다.
 
 ```
-API_SIGN = sha256(TRANS_SEQNO + PLATFORM_CODE + STORE_CODE + TRANS_AT + API_KEY)   # 소문자 hex
-TRANS_AT = KST 기준 yyyyMMddHHmmss (14자리)
+payload  = "chewingpay-api-sign:v2" \n 작업 \n TRANS_SEQNO \n PLATFORM_CODE \n STORE_CODE \n TRANS_AT \n 금액
+API_SIGN = HMAC-SHA256(key = API_KEY, payload)   # 소문자 hex 64자
+TRANS_AT = KST 기준 yyyyMMddHHmmss (14자리), 게이트웨이 시각 ±5분 안 (벗어나면 3002)
 ```
+
+| API | 작업 | 금액 |
+|---|---|---|
+| requestPayment | `requestPayment` | `APPROVAL_AMOUNT` |
+| searchPayment | `searchPayment` | 빈 문자열 |
+| requestPaymentCancel | `requestPaymentCancel:CANCEL` / `requestPaymentCancel:DELETE` | `APPROVAL_AMOUNT` |
+| test/approvePayment (테스트 게이트웨이) | `approveTestPayment` | 빈 문자열 |
+
+예시 — API_KEY `test-key`, TRANS_SEQNO `cp202610111200001234`, PLATFORM_CODE `PLAT`, STORE_CODE `SHOP`, TRANS_AT `20261011120000`, 작업 `requestPayment`, 금액 `1000` → `89f99c0f2767f0496bb795ee8c3ff2121fd9624bb7be4c244ab9a32d53c77a5a`
+
+> 옛 v1 서명 `sha256(TRANS_SEQNO + PLATFORM_CODE + STORE_CODE + TRANS_AT + API_KEY)` 은 전환 기간에만 받습니다. 조회 서명을 취소에 다시 쓸 수 있는 구조라 곧 끕니다 — SDK 1.6 이하를 쓰면 1.7.0 으로 올려 주세요.
 
 ```bash
-SIGN=$(printf '%s' "svc001${PC}${SD}20260819120000${KEY}" | shasum -a 256 | cut -d' ' -f1)
+SIGN=$(printf 'chewingpay-api-sign:v2\nrequestPayment\nsvc001\n%s\n%s\n20260819120000\n128000' "$PC" "$SD" \
+  | openssl dgst -sha256 -hmac "$KEY" | awk '{print $NF}')
 curl -X POST https://dev-api.chewingpay.com/api/requestPayment \
   -H 'Content-Type: application/json' \
   -d "{\"TRANS_SEQNO\":\"svc001\",\"PLATFORM_CODE\":\"$PC\",\"STORE_CODE\":\"$SD\",
@@ -237,16 +250,25 @@ curl -X POST https://dev-api.chewingpay.com/api/requestPayment \
 
 ---
 
-## API 4개
+## API
 
 | 하는 일 | 엔드포인트 | Node | Python |
 |---|---|---|---|
 | 결제 생성 → 링크 발급 | `POST /api/requestPayment` | `createPayment()` | `create_payment()` |
+| 결제 링크 재발급 (미결제) | `POST /api/renewPaymentLink` | `renewPaymentLink()` | `renew_payment_link()` |
 | 상태 조회 (승인 확인) | `POST /api/searchPayment` | `getPayment()` | `get_payment()` |
 | 취소(전액)/환불 · 청구서 삭제 | `POST /api/requestPaymentCancel` | `cancelPayment()` / `deleteBill()` | `cancel_payment()` / `delete_bill()` |
 | 완료 콜백 (파트너가 구현) | `POST {CONFIRM_URL}` | `confirmCallback()` | `confirm_callback()` |
 
 상태값: `STORE_REQUEST`(대기) → `APPROVE_COMPLETE`(**승인 완료**) / `APPROVE_FAIL` / `CANCEL_COMPLETE` / `CANCEL_FAIL` / `STORE_DELETE`
+
+### 저장 카드 결제(카리페이 간편결제)
+
+결제창의 **카리페이** 탭에서 고객이 카드를 한 번 등록하면, 다음 결제부터 결제 비밀번호만으로 결제합니다(NICE ePAY).
+
+- **같은 고객 = 같은 카드 목록.** `createPayment({ userId })` 에 회원 ID(30자 이하)를 넘기세요. 없으면 휴대폰 번호로 구분합니다 — 같은 번호를 쓰는 다른 사람과 카드가 섞이지 않게 회원 ID를 권장합니다.
+- **링크의 저장 카드 결제 시간은 30분입니다.** 링크를 문자로 보내고 고객이 늦게 열면 카리페이 탭이 막힙니다(앱카드 결제는 계속 됩니다). 고객이 결제하러 들어오는 순간 `renewPaymentLink(거래번호)` 로 새 링크를 받아 그쪽으로 보내세요. 결제·삭제가 끝난 거래는 `4001`.
+- 5만원 초과는 결제창에서 서명을 받습니다. 가맹점별로 순차 개통 중이라, 카리페이 탭이 안 보이면 담당자에게 개통을 요청하세요.
 
 ## 안 지키면 사고 나는 것 5가지
 
@@ -259,9 +281,11 @@ curl -X POST https://dev-api.chewingpay.com/api/requestPayment \
 ## 오픈 전 체크
 
 - [ ] 거래번호(`TRANS_SEQNO`)가 전 시스템에서 유일한 구조인가 (`newTransSeqno()` 사용 권장)
-- [ ] 입력 한도 — 거래번호 영문·숫자·_·- 40자, 콜백 주소 https 100자(localhost 불가, 로컬은 터널), 결제자명 50자, 임의값 200자, 회원 ID 30자. 넘으면 게이트웨이가 `VALIDATION_ERROR` 로 거절합니다(SDK 1.6.0 은 호출 전에 막음)
+- [ ] 입력 한도 — 거래번호 영문·숫자·_·- 40자, 콜백 주소 https 100자(localhost 불가, 로컬은 터널), 결제자명 50자, 임의값 200자, 회원 ID 30자. 넘으면 게이트웨이가 `VALIDATION_ERROR` 로 거절합니다(SDK 1.6.0 부터 호출 전에 막음)
 - [ ] 테스트 게이트웨이에서 결제 → 콜백 → 조회 → 취소 전 구간 1회 이상 통과 (테스트 게이트웨이는 실제 카드 결제가 되지 않습니다 — `approveTestPayment(거래번호)` / `approve_test_payment()` 로 승인과 콜백을 흉내 냅니다)
 - [ ] 승인금액과 주문금액 대사 로직 존재
+- [ ] 서명 v2 (SDK 1.7.0 이상, 직접 호출이면 위 v2 식) — v1 은 곧 거절됩니다
+- [ ] 문자로 보낸 링크는 고객이 열 때 `renewPaymentLink` 로 새로 받아 넘김 (저장 카드 결제 30분)
 - [ ] 운영 키로 환경변수 교체 (`CARIPAY_MODE=live`)
 - [ ] `API_KEY`가 코드·로그·클라이언트 번들에 없음
 

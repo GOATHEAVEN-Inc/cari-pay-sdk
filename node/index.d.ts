@@ -77,6 +77,16 @@ export declare class CariPayError extends Error {
 
 export declare function nowKst14(date?: Date): string;
 export declare function newTransSeqno(prefix?: string): string;
+/** API_SIGN v2 — 작업·금액·TRANS_AT 을 묶는 HMAC-SHA256. SDK 메서드는 이것으로 서명한다. */
+export declare function signV2(o: {
+  op: "requestPayment" | "searchPayment" | "requestPaymentCancel:CANCEL" | "requestPaymentCancel:DELETE" | "approveTestPayment";
+  amount?: string; transSeqno: string; platformCode: string; storeCode: string; transAt: string; apiKey: string;
+}): string;
+/** 결제 링크 재발급(/api/renewPaymentLink) 서명. requestedAt = 유닉스 초. */
+export declare function signRenewLink(o: {
+  transSeqno: string; platformCode: string; storeCode: string; requestedAt: number; apiKey: string;
+}): string;
+/** @deprecated v1(레거시). 게이트웨이가 v1 을 끄면 거절된다 — signV2 를 쓴다. */
 export declare function sign(o: {
   transSeqno: string; platformCode: string; storeCode: string; transAt: string; apiKey: string;
 }): string;
@@ -142,6 +152,8 @@ export declare class CariPay {
   /** 승인금액 전액 취소만 가능. amount 를 넘기면 승인금액과 같아야 한다. */
   cancelPayment(o: { transSeqno: string; amount?: number | string; mobileNo?: string }): Promise<{ transSeqno: string; canceledAmount: number | null; raw: Record<string, unknown> }>;
   deleteBill(o: { transSeqno: string; amount: number | string; mobileNo: string }): Promise<{ transSeqno: string; raw: Record<string, unknown> }>;
+  /** 미결제 거래의 결제 링크(accessToken 30분)를 새로 받는다. 서버 간 호출 전용. 끝난 거래는 4001. */
+  renewPaymentLink(transSeqno: string): Promise<{ transSeqno: string; redirectUrl: string; raw: Record<string, unknown> }>;
   confirmCallback(input: string | { TRANS_SEQNO?: string; transSeqno?: string }): Promise<Payment>;
   waitForPayment(transSeqno: string, o?: { intervalMs?: number; timeoutMs?: number }): Promise<Payment>;
 }

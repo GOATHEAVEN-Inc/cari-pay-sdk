@@ -222,6 +222,7 @@ const PATHS = {
   search: "/api/searchPayment",
   cancel: "/api/requestPaymentCancel",
   testApprove: "/api/test/approvePayment",
+  renewLink: "/api/renewPaymentLink",
 };
 
 /** 승인완료 상태값. 그 외는 미승인으로 취급한다. */
@@ -256,7 +257,26 @@ export function newTransSeqno(prefix = "cp") {
   return `${prefix}${nowKst14()}${String(randomInt(0, 10000)).padStart(4, "0")}`;
 }
 
-/** API_SIGN = sha256(TRANS_SEQNO + PLATFORM_CODE + STORE_CODE + TRANS_AT + API_KEY) */
+/**
+ * API_SIGN v2 = HMAC-SHA256(API_KEY, "chewingpay-api-sign:v2\n작업\nTRANS_SEQNO\nPLATFORM_CODE\nSTORE_CODE\nTRANS_AT\n금액") 소문자 hex.
+ * 작업: requestPayment · searchPayment · requestPaymentCancel:CANCEL · requestPaymentCancel:DELETE · approveTestPayment.
+ * 금액: 결제·취소는 APPROVAL_AMOUNT 문자열, 조회·테스트 승인은 "". TRANS_AT 은 게이트웨이 시각 ±5분 안이어야 한다(3002).
+ */
+export function signV2({ op, amount = "", transSeqno, platformCode, storeCode, transAt, apiKey }) {
+  const payload = ["chewingpay-api-sign:v2", op, transSeqno, platformCode, storeCode, transAt, amount].join("\n");
+  return createHmac("sha256", apiKey).update(payload, "utf8").digest("hex");
+}
+
+/** 결제 링크 재발급 서명: HMAC-SHA256(API_KEY, "renew-payment-link:v1\nTRANS_SEQNO\nPLATFORM_CODE\nSTORE_CODE\nREQUESTED_AT(유닉스 초)") */
+export function signRenewLink({ transSeqno, platformCode, storeCode, requestedAt, apiKey }) {
+  const payload = ["renew-payment-link:v1", transSeqno, platformCode, storeCode, String(requestedAt)].join("\n");
+  return createHmac("sha256", apiKey).update(payload, "utf8").digest("hex");
+}
+
+/**
+ * @deprecated v1(레거시) — 작업·금액을 묶지 않아 새어 나간 조회 서명을 취소에 쓸 수 있다. 게이트웨이가 v1 을 끄면 거절된다. signV2 를 쓴다.
+ * API_SIGN = sha256(TRANS_SEQNO + PLATFORM_CODE + STORE_CODE + TRANS_AT + API_KEY)
+ */
 export function sign({ transSeqno, platformCode, storeCode, transAt, apiKey }) {
   return createHash("sha256")
     .update(transSeqno + platformCode + storeCode + transAt + apiKey, "utf8")
@@ -363,7 +383,7 @@ export class CariPay {
     });
   }
 
-  async #call(path, transSeqno, extra) {
+  async #call(path, transSeqno, extra, op, amount = "") {
     const transAt = nowKst14();
     const body = {
       TRANS_SEQNO: transSeqno,
@@ -371,7 +391,9 @@ export class CariPay {
       STORE_CODE: this.storeCode,
       TRANS_AT: transAt,
       ...extra,
-      API_SIGN: sign({
+      API_SIGN: signV2({
+        op,
+        amount,
         transSeqno,
         platformCode: this.platformCode,
         storeCode: this.storeCode,
@@ -379,7 +401,10 @@ export class CariPay {
         apiKey: this.apiKey,
       }),
     };
+    return this.#send(path, transSeqno, body);
+  }
 
+  async #send(path, transSeqno, body) {
     let res;
     try {
       res = await this.fetch(this.baseUrl + path, {
@@ -439,8 +464,9 @@ export class CariPay {
     if (orderType !== "BILL" && orderType !== "SHOP") {
       throw new CariPayError(`orderType은 BILL | SHOP 이어야 합니다: ${orderType}`);
     }
+    const approvalAmount = checkAmount(amount);
     const d = await this.#call(PATHS.create, seq, {
-      APPROVAL_AMOUNT: checkAmount(amount),
+      APPROVAL_AMOUNT: approvalAmount,
       MOBILE_NO: checkMobile(mobileNo),
       PAY_USER_NAME: checkMax(req(payerName, "payerName"), "payerName", 50),
       REQUEST_REASON: checkMax(req(reason, "reason"), "reason", 2000),
@@ -453,7 +479,7 @@ export class CariPay {
       ...(tempValue !== undefined && tempValue !== null ? { TEMP_VALUE: String(checkMax(tempValue, "tempValue", 200)) } : {}),
       ...(userId !== undefined && userId !== null ? { USER_ID: String(checkMax(userId, "userId", 30)) } : {}),
       ...(items ? { ITEMS: items } : {}),
-    });
+    }, "requestPayment", approvalAmount);
     if (!d.REDIRECT_URL) {
       throw new CariPayError("REDIRECT_URL이 없습니다.", { transSeqno: seq, response: d });
     }
@@ -466,13 +492,13 @@ export class CariPay {
    */
   async approveTestPayment(transSeqno) {
     if (this.baseUrl === BASE_URLS.live) throw new CariPayError("approveTestPayment는 테스트 게이트웨이 전용입니다.");
-    await this.#call(PATHS.testApprove, checkTransSeqno(transSeqno));
+    await this.#call(PATHS.testApprove, checkTransSeqno(transSeqno), {}, "approveTestPayment");
     return this.getPayment(transSeqno);
   }
 
   /** 결제 상태 조회 (승인 확인의 유일한 근거) */
   async getPayment(transSeqno) {
-    const d = await this.#call(PATHS.search, checkTransSeqno(transSeqno));
+    const d = await this.#call(PATHS.search, checkTransSeqno(transSeqno), {}, "searchPayment");
     return {
       transSeqno: d.TRANS_SEQNO ?? transSeqno,
       status: d.APPROVE_STATUS ?? null,
@@ -502,23 +528,47 @@ export class CariPay {
       amt = amt ?? p.amount;
       phone = phone ?? p.raw.MOBILE_NO;
     }
+    const approvalAmount = checkAmount(amt);
     const d = await this.#call(PATHS.cancel, seq, {
       REQUEST_TYPE: "CANCEL",
-      APPROVAL_AMOUNT: checkAmount(amt),
+      APPROVAL_AMOUNT: approvalAmount,
       MOBILE_NO: checkMobile(phone),
-    });
+    }, "requestPaymentCancel:CANCEL", approvalAmount);
     return { transSeqno: seq, canceledAmount: numberOrNull(d.APPROVAL_AMOUNT), raw: d };
   }
 
   /** 미결제 청구서 삭제 (승인건 환불은 cancelPayment) */
   async deleteBill({ transSeqno, amount, mobileNo }) {
     const seq = checkTransSeqno(transSeqno);
+    const approvalAmount = checkAmount(amount);
     const d = await this.#call(PATHS.cancel, seq, {
       REQUEST_TYPE: "DELETE",
-      APPROVAL_AMOUNT: checkAmount(amount),
+      APPROVAL_AMOUNT: approvalAmount,
       MOBILE_NO: checkMobile(mobileNo),
-    });
+    }, "requestPaymentCancel:DELETE", approvalAmount);
     return { transSeqno: seq, raw: d };
+  }
+
+  /**
+   * 미결제 거래의 결제 링크를 새로 받는다(서버 간 호출 전용). 링크의 accessToken 은 30분짜리라,
+   * 고객이 늦게 열면 저장 카드(카리페이) 결제가 막힌다 — 고객이 결제하러 들어오는 시점에 새 링크로 보낸다.
+   * 결제·삭제가 끝난 거래는 4001.
+   * @returns {Promise<{transSeqno:string, redirectUrl:string, raw:object}>}
+   */
+  async renewPaymentLink(transSeqno) {
+    const seq = checkTransSeqno(transSeqno);
+    const requestedAt = Math.floor(Date.now() / 1000);
+    const d = await this.#send(PATHS.renewLink, seq, {
+      TRANS_SEQNO: seq,
+      PLATFORM_CODE: this.platformCode,
+      STORE_CODE: this.storeCode,
+      REQUESTED_AT: requestedAt,
+      API_SIGN: signRenewLink({ transSeqno: seq, platformCode: this.platformCode, storeCode: this.storeCode, requestedAt, apiKey: this.apiKey }),
+    });
+    if (!d.REDIRECT_URL) {
+      throw new CariPayError("REDIRECT_URL이 없습니다.", { transSeqno: seq, response: d });
+    }
+    return { transSeqno: seq, redirectUrl: d.REDIRECT_URL, raw: d };
   }
 
   /**
