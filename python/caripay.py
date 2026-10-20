@@ -31,6 +31,7 @@ _PATHS = {
     "search": "/api/searchPayment",
     "cancel": "/api/requestPaymentCancel",
     "test_approve": "/api/test/approvePayment",
+    "renew_link": "/api/renewPaymentLink",
 }
 
 APPROVED = "APPROVE_COMPLETE"
@@ -285,9 +286,30 @@ def new_trans_seqno(prefix: str = "cp") -> str:
     return f"{prefix}{now_kst14()}{random.randrange(10000):04d}"
 
 
+def sign_v2(op: str, trans_seqno: str, platform_code: str, store_code: str,
+            trans_at: str, api_key: str, amount: str = "") -> str:
+    """API_SIGN v2 = HMAC-SHA256(API_KEY, "chewingpay-api-sign:v2\\n작업\\nTRANS_SEQNO\\nPLATFORM_CODE\\nSTORE_CODE\\nTRANS_AT\\n금액") hex.
+
+    작업: requestPayment · searchPayment · requestPaymentCancel:CANCEL · requestPaymentCancel:DELETE · approveTestPayment.
+    금액: 결제·취소는 APPROVAL_AMOUNT 문자열, 조회·테스트 승인은 "". TRANS_AT 은 게이트웨이 시각 ±5분 안(3002).
+    """
+    payload = "\n".join(["chewingpay-api-sign:v2", op, trans_seqno, platform_code, store_code, trans_at, amount])
+    return hmac.new(api_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def sign_renew_link(trans_seqno: str, platform_code: str, store_code: str,
+                    requested_at: int, api_key: str) -> str:
+    """결제 링크 재발급 서명: HMAC-SHA256(API_KEY, "renew-payment-link:v1\\nTRANS_SEQNO\\nPLATFORM_CODE\\nSTORE_CODE\\nREQUESTED_AT")."""
+    payload = "\n".join(["renew-payment-link:v1", trans_seqno, platform_code, store_code, str(requested_at)])
+    return hmac.new(api_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def sign(trans_seqno: str, platform_code: str, store_code: str,
          trans_at: str, api_key: str) -> str:
-    """API_SIGN = sha256(TRANS_SEQNO + PLATFORM_CODE + STORE_CODE + TRANS_AT + API_KEY)."""
+    """Deprecated v1(레거시): 작업·금액을 묶지 않는다. 게이트웨이가 v1 을 끄면 거절된다 — sign_v2 를 쓴다.
+
+    API_SIGN = sha256(TRANS_SEQNO + PLATFORM_CODE + STORE_CODE + TRANS_AT + API_KEY).
+    """
     raw = f"{trans_seqno}{platform_code}{store_code}{trans_at}{api_key}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -397,7 +419,8 @@ class CariPay:
             return exc.read().decode("utf-8")
 
     def _call(self, path: str, trans_seqno: str,
-              extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+              extra: Optional[Dict[str, Any]] = None, op: str = "",
+              amount: str = "") -> Dict[str, Any]:
         trans_at = now_kst14()
         body: Dict[str, Any] = {
             "TRANS_SEQNO": trans_seqno,
@@ -406,9 +429,11 @@ class CariPay:
             "TRANS_AT": trans_at,
         }
         body.update(extra or {})
-        body["API_SIGN"] = sign(trans_seqno, self.platform_code,
-                                self.store_code, trans_at, self.api_key)
+        body["API_SIGN"] = sign_v2(op, trans_seqno, self.platform_code,
+                                   self.store_code, trans_at, self.api_key, amount)
+        return self._send(path, trans_seqno, body)
 
+    def _send(self, path: str, trans_seqno: str, body: Dict[str, Any]) -> Dict[str, Any]:
         try:
             text = self._post(self.base_url + path, body)
         except (urllib.error.URLError, OSError) as exc:
@@ -448,8 +473,9 @@ class CariPay:
         if order_type not in ("BILL", "SHOP"):
             raise CariPayError(f"order_type은 BILL | SHOP 이어야 합니다: {order_type}")
 
+        approval_amount = _check_amount(amount)
         extra: Dict[str, Any] = {
-            "APPROVAL_AMOUNT": _check_amount(amount),
+            "APPROVAL_AMOUNT": approval_amount,
             "MOBILE_NO": _check_mobile(mobile_no),
             "PAY_USER_NAME": _check_max(_required(payer_name, "payer_name"), "payer_name", 50),
             "REQUEST_REASON": _check_max(_required(reason, "reason"), "reason", 2000),
@@ -467,7 +493,7 @@ class CariPay:
         if items:
             extra["ITEMS"] = list(items)
 
-        data = self._call(_PATHS["create"], seqno, extra)
+        data = self._call(_PATHS["create"], seqno, extra, "requestPayment", approval_amount)
         if not data.get("REDIRECT_URL"):
             raise CariPayError("REDIRECT_URL이 없습니다.", trans_seqno=seqno, response=data)
         return {"trans_seqno": seqno, "redirect_url": data["REDIRECT_URL"], "raw": data}
@@ -477,12 +503,12 @@ class CariPay:
         테스트 게이트웨이는 실제 카드 결제가 되지 않아, 콜백 → 조회 → 주문 확정 경로를 이것으로 시험한다."""
         if self.base_url == BASE_URLS["live"]:
             raise CariPayError("approve_test_payment는 테스트 게이트웨이 전용입니다.")
-        self._call(_PATHS["test_approve"], _check_seqno(trans_seqno))
+        self._call(_PATHS["test_approve"], _check_seqno(trans_seqno), op="approveTestPayment")
         return self.get_payment(trans_seqno)
 
     def get_payment(self, trans_seqno: str) -> Dict[str, Any]:
         """결제 상태 조회. 승인 확인의 유일한 근거."""
-        data = self._call(_PATHS["search"], _check_seqno(trans_seqno))
+        data = self._call(_PATHS["search"], _check_seqno(trans_seqno), op="searchPayment")
         status = data.get("APPROVE_STATUS")
         return {
             "trans_seqno": data.get("TRANS_SEQNO") or trans_seqno,
@@ -512,22 +538,44 @@ class CariPay:
             amount = amount if amount is not None else found["amount"]
             mobile_no = mobile_no or found["raw"].get("MOBILE_NO")
 
+        approval_amount = _check_amount(amount)
         data = self._call(_PATHS["cancel"], seqno, {
             "REQUEST_TYPE": "CANCEL",
-            "APPROVAL_AMOUNT": _check_amount(amount),
+            "APPROVAL_AMOUNT": approval_amount,
             "MOBILE_NO": _check_mobile(mobile_no),
-        })
+        }, "requestPaymentCancel:CANCEL", approval_amount)
         return {"trans_seqno": seqno, "canceled_amount": _number_or_none(data.get("APPROVAL_AMOUNT")), "raw": data}
 
     def delete_bill(self, trans_seqno: str, amount: Any, mobile_no: str) -> Dict[str, Any]:
         """미결제 청구서 삭제. 승인건 환불은 cancel_payment."""
         seqno = _check_seqno(trans_seqno)
+        approval_amount = _check_amount(amount)
         data = self._call(_PATHS["cancel"], seqno, {
             "REQUEST_TYPE": "DELETE",
-            "APPROVAL_AMOUNT": _check_amount(amount),
+            "APPROVAL_AMOUNT": approval_amount,
             "MOBILE_NO": _check_mobile(mobile_no),
-        })
+        }, "requestPaymentCancel:DELETE", approval_amount)
         return {"trans_seqno": seqno, "raw": data}
+
+    def renew_payment_link(self, trans_seqno: str) -> Dict[str, Any]:
+        """미결제 거래의 결제 링크를 새로 받는다(서버 간 호출 전용).
+
+        링크의 accessToken 은 30분짜리라 고객이 늦게 열면 저장 카드(카리페이) 결제가 막힌다 —
+        고객이 결제하러 들어오는 시점에 새 링크로 보낸다. 결제·삭제가 끝난 거래는 4001.
+        """
+        seqno = _check_seqno(trans_seqno)
+        requested_at = int(time.time())
+        data = self._send(_PATHS["renew_link"], seqno, {
+            "TRANS_SEQNO": seqno,
+            "PLATFORM_CODE": self.platform_code,
+            "STORE_CODE": self.store_code,
+            "REQUESTED_AT": requested_at,
+            "API_SIGN": sign_renew_link(seqno, self.platform_code, self.store_code,
+                                        requested_at, self.api_key),
+        })
+        if not data.get("REDIRECT_URL"):
+            raise CariPayError("REDIRECT_URL이 없습니다.", trans_seqno=seqno, response=data)
+        return {"trans_seqno": seqno, "redirect_url": data["REDIRECT_URL"], "raw": data}
 
     def confirm_callback(self, payload: Any) -> Dict[str, Any]:
         """CONFIRM_URL 콜백 처리용. 본문을 믿지 말고 조회로 이중확인한다.

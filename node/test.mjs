@@ -1,7 +1,7 @@
 // 셀프체크: node test.mjs  (네트워크 없이 fetch를 가짜로 주입해 전 구간 검증)
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { CariPay, CariPayError, sign, nowKst14, newTransSeqno } from "./index.js";
+import { createHash, createHmac } from "node:crypto";
+import { CariPay, CariPayError, sign, signV2, signRenewLink, nowKst14, newTransSeqno } from "./index.js";
 
 const KEY = "secret-key";
 const cfg = { platformCode: "PC0001", storeCode: "SD0001", apiKey: KEY, mode: "test" };
@@ -11,6 +11,17 @@ const cfg = { platformCode: "PC0001", storeCode: "SD0001", apiKey: KEY, mode: "t
   const s = sign({ transSeqno: "T1", platformCode: "PC0001", storeCode: "SD0001", transAt: "20260819120000", apiKey: KEY });
   assert.equal(s, createHash("sha256").update("T1PC0001SD000120260819120000" + KEY).digest("hex"));
   assert.match(s, /^[0-9a-f]{64}$/);
+}
+
+// 1-1. v2 서명 = 게이트웨이 docs/API_SIGN_V2.md 공개 예시 벡터와 같아야 한다
+{
+  const v = { transSeqno: "cp202610111200001234", platformCode: "PLAT", storeCode: "SHOP", transAt: "20261011120000", apiKey: "test-key" };
+  assert.equal(signV2({ ...v, op: "requestPayment", amount: "1000" }), "89f99c0f2767f0496bb795ee8c3ff2121fd9624bb7be4c244ab9a32d53c77a5a");
+  assert.equal(signV2({ ...v, op: "searchPayment" }), "aaaeaffb70e7f9b490892d381d6bb93f98562cbd4c4a0647b3966aefccdaf52c");
+  assert.equal(signV2({ ...v, op: "requestPaymentCancel:CANCEL", amount: "1000" }), "219251639f79fa8897537f7afc94298869e31f81216b1816fdb23e21c5fca242");
+  // 링크 재발급 서명: 게이트웨이 RenewPaymentLinkRequest 와 같은 식
+  assert.equal(signRenewLink({ transSeqno: "T1", platformCode: "P", storeCode: "S", requestedAt: 1760000000, apiKey: KEY }),
+    createHmac("sha256", KEY).update("renew-payment-link:v1\nT1\nP\nS\n1760000000").digest("hex"));
 }
 
 // 2. TRANS_AT은 KST 14자리
@@ -41,7 +52,7 @@ const cfg = { platformCode: "PC0001", storeCode: "SD0001", apiKey: KEY, mode: "t
   assert.equal(sent.body.APPROVAL_AMOUNT, "12000");        // 문자열 금액
   assert.equal(sent.body.MOBILE_NO, "01012345678");        // 하이픈 제거
   assert.equal(sent.body.orderType, "BILL");
-  assert.equal(sent.body.API_SIGN, sign({ transSeqno: "svc001", platformCode: "PC0001", storeCode: "SD0001", transAt: sent.body.TRANS_AT, apiKey: KEY }));
+  assert.equal(sent.body.API_SIGN, signV2({ op: "requestPayment", amount: "12000", transSeqno: "svc001", platformCode: "PC0001", storeCode: "SD0001", transAt: sent.body.TRANS_AT, apiKey: KEY }));
   assert.match(sent.body.TRANS_AT, /^\d{14}$/);
 }
 
@@ -107,6 +118,38 @@ const cfg = { platformCode: "PC0001", storeCode: "SD0001", apiKey: KEY, mode: "t
   assert.equal(calls.at(-1).url, "https://dev-api.chewingpay.com/api/requestPaymentCancel");
   assert.equal(calls.at(-1).body.REQUEST_TYPE, "CANCEL");
   assert.equal(calls.at(-1).body.APPROVAL_AMOUNT, "12000");
+  // 작업·금액이 서명에 묶인다 — 조회 서명으로는 취소가 안 된다
+  const [search, cancel] = calls;
+  assert.equal(search.body.API_SIGN, signV2({ op: "searchPayment", transSeqno: "svc001", platformCode: "PC0001", storeCode: "SD0001", transAt: search.body.TRANS_AT, apiKey: KEY }));
+  assert.equal(cancel.body.API_SIGN, signV2({ op: "requestPaymentCancel:CANCEL", amount: "12000", transSeqno: "svc001", platformCode: "PC0001", storeCode: "SD0001", transAt: cancel.body.TRANS_AT, apiKey: KEY }));
+}
+
+// 7-1. 미결제 삭제는 DELETE 작업으로 서명
+{
+  let sent;
+  const pay = new CariPay({ ...cfg, fetch: async (url, init) => {
+    sent = JSON.parse(init.body);
+    return new Response(JSON.stringify({ result_data: { RESULT_CODE: "0000" } }));
+  }});
+  await pay.deleteBill({ transSeqno: "svc001", amount: 500, mobileNo: "01012345678" });
+  assert.equal(sent.API_SIGN, signV2({ op: "requestPaymentCancel:DELETE", amount: "500", transSeqno: "svc001", platformCode: "PC0001", storeCode: "SD0001", transAt: sent.TRANS_AT, apiKey: KEY }));
+}
+
+// 7-2. 결제 링크 재발급: REQUESTED_AT(유닉스 초) + 재발급 서명, 새 링크 반환
+{
+  let sent;
+  const pay = new CariPay({ ...cfg, fetch: async (url, init) => {
+    sent = { url, body: JSON.parse(init.body) };
+    return new Response(JSON.stringify({ result_data: { RESULT_CODE: "0000", REDIRECT_URL: "https://pay/x?accessToken=v1.2" } }));
+  }});
+  const r = await pay.renewPaymentLink("svc001");
+  assert.equal(r.redirectUrl, "https://pay/x?accessToken=v1.2");
+  assert.equal(sent.url, "https://dev-api.chewingpay.com/api/renewPaymentLink");
+  assert.equal("TRANS_AT" in sent.body, false);
+  assert.ok(Math.abs(sent.body.REQUESTED_AT - Date.now() / 1000) < 5);
+  assert.equal(sent.body.API_SIGN, signRenewLink({ transSeqno: "svc001", platformCode: "PC0001", storeCode: "SD0001", requestedAt: sent.body.REQUESTED_AT, apiKey: KEY }));
+  const done = new CariPay({ ...cfg, fetch: async () => new Response(JSON.stringify({ result_data: { RESULT_CODE: "4001", RESULT_MSG: "이미 처리" } })) });
+  await assert.rejects(() => done.renewPaymentLink("svc001"), (e) => e.code === "4001");
 }
 
 // 8. 폴링: 미승인이면 계속 보다가 승인되면 즉시 반환

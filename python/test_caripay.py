@@ -1,9 +1,11 @@
 """셀프체크: python3 test_caripay.py (네트워크 없이 _post를 가짜로 바꿔 전 구간 검증)"""
 import hashlib
+import hmac
+import time
 import json
 from datetime import datetime, timezone
 
-from caripay import CariPay, CariPayError, new_trans_seqno, now_kst14, sign
+from caripay import CariPay, CariPayError, new_trans_seqno, now_kst14, sign, sign_renew_link, sign_v2
 
 KEY = "secret-key"
 CFG = dict(platform_code="PC0001", store_code="SD0001", api_key=KEY, mode="test")
@@ -24,6 +26,14 @@ def stub(pay, responder):
 # 1. 서명 = 5개 값 무구분자 연결 후 sha256 소문자 hex
 assert sign("T1", "PC0001", "SD0001", "20260819120000", KEY) == hashlib.sha256(
     ("T1PC0001SD000120260819120000" + KEY).encode()).hexdigest()
+
+# 1-1. v2 서명 = 게이트웨이 docs/API_SIGN_V2.md 공개 예시 벡터
+V = ("cp202610111200001234", "PLAT", "SHOP", "20261011120000", "test-key")
+assert sign_v2("requestPayment", *V, amount="1000") == "89f99c0f2767f0496bb795ee8c3ff2121fd9624bb7be4c244ab9a32d53c77a5a"
+assert sign_v2("searchPayment", *V) == "aaaeaffb70e7f9b490892d381d6bb93f98562cbd4c4a0647b3966aefccdaf52c"
+assert sign_v2("requestPaymentCancel:CANCEL", *V, amount="1000") == "219251639f79fa8897537f7afc94298869e31f81216b1816fdb23e21c5fca242"
+assert sign_renew_link("T1", "P", "S", 1760000000, KEY) == hmac.new(
+    KEY.encode(), b"renew-payment-link:v1\nT1\nP\nS\n1760000000", hashlib.sha256).hexdigest()
 
 # 2. TRANS_AT은 KST 14자리
 assert now_kst14(datetime(2026, 8, 19, tzinfo=timezone.utc)) == "20260819090000"
@@ -47,7 +57,7 @@ assert body["APPROVAL_AMOUNT"] == "12000"       # 문자열 금액
 assert body["MOBILE_NO"] == "01012345678"       # 하이픈 제거
 assert body["orderType"] == "BILL"
 assert len(body["TRANS_AT"]) == 14
-assert body["API_SIGN"] == sign("svc001", "PC0001", "SD0001", body["TRANS_AT"], KEY)
+assert body["API_SIGN"] == sign_v2("requestPayment", "svc001", "PC0001", "SD0001", body["TRANS_AT"], KEY, "12000")
 assert "RETURN_URL" not in body and "TEMP_VALUE" not in body
 
 # 3-1. 결제 후 복귀 주소·임의값: 주면 실리고, HTTP·100자 초과는 호출 전에 거절
@@ -181,5 +191,18 @@ except CariPayError as e:
     assert e.code == "VALIDATION_ERROR" and "PAY_USER_NAME" in str(e), (e.code, str(e))
 finally:
     srv.shutdown()
+
+# 9. 삭제·링크 재발급 서명
+pay = CariPay(**CFG)
+sent = stub(pay, lambda url, body: {"result_data": {"RESULT_CODE": "0000", "REDIRECT_URL": "https://pay/x?accessToken=v1.2"}})
+pay.delete_bill("svc001", 500, "01012345678")
+body = sent[-1]["body"]
+assert body["API_SIGN"] == sign_v2("requestPaymentCancel:DELETE", "svc001", "PC0001", "SD0001", body["TRANS_AT"], KEY, "500")
+renewed = pay.renew_payment_link("svc001")
+body = sent[-1]["body"]
+assert renewed["redirect_url"] == "https://pay/x?accessToken=v1.2"
+assert sent[-1]["url"] == "https://dev-api.chewingpay.com/api/renewPaymentLink"
+assert "TRANS_AT" not in body and abs(body["REQUESTED_AT"] - time.time()) < 5
+assert body["API_SIGN"] == sign_renew_link("svc001", "PC0001", "SD0001", body["REQUESTED_AT"], KEY)
 
 print("✅ 전부 통과")
